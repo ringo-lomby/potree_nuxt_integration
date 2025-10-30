@@ -43,6 +43,11 @@ export class ApiVectorLoader {
     return ApiVectorLoader.loadFeatures(features, params);
   }
 
+  static async loadGeoJson(vectormap) {
+    const features = vectormap || [];
+    return ApiVectorLoader.loadFeatures(features, {});
+  }
+
   static async loadFeatures(features, params = {}) {
     const rootNode = new THREE.Object3D();
     rootNode.name = params.source || "ApiVectors";
@@ -56,8 +61,12 @@ export class ApiVectorLoader {
       const coords = feature.geometry.coordinates;
       const color = getColor(feature.properties.type);
 
-      const matNode = new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.5 });
-      
+      const matNode = new THREE.MeshBasicMaterial({
+        color: 0x0000ff,
+        transparent: true,
+        opacity: 0.5,
+      });
+
       const matLine = new LineMaterial({
         color: new THREE.Color().setRGB(...color),
         linewidth: params.linewidth || 2,
@@ -112,7 +121,12 @@ export class ApiVectorLoader {
     return line;
   }
 
-  static createLineWithNodes(coords, matLine, nodeColor = 0x0000ff, nodeSize = 0.5) {
+  static createLineWithNodes(
+    coords,
+    matLine,
+    nodeColor = 0x0000ff,
+    nodeSize = 0.5
+  ) {
     const group = new THREE.Group();
 
     const min = new THREE.Vector3(Infinity, Infinity, Infinity);
@@ -139,13 +153,16 @@ export class ApiVectorLoader {
       pointsArray[i * 3 + 1] = y - min.y;
       pointsArray[i * 3 + 2] = z - min.z;
     });
-    pointsGeometry.setAttribute('position', new THREE.BufferAttribute(pointsArray, 3));
+    pointsGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(pointsArray, 3)
+    );
 
-    const canvas = document.createElement('canvas');
+    const canvas = document.createElement("canvas");
     canvas.width = 64;
     canvas.height = 64;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#ffffff';
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
     ctx.beginPath();
     ctx.arc(32, 32, 32, 0, Math.PI * 2);
     ctx.fill();
@@ -168,7 +185,6 @@ export class ApiVectorLoader {
     return group;
   }
 
-
   static createPolygon(rings, matLine) {
     const group = new THREE.Object3D();
 
@@ -187,7 +203,11 @@ export class ApiVectorLoader {
       const closedRing = [...ring];
       const first = ring[0];
       const last = ring[ring.length - 1];
-      if (first[0] !== last[0] || first[1] !== last[1] || first[2] !== last[2]) {
+      if (
+        first[0] !== last[0] ||
+        first[1] !== last[1] ||
+        first[2] !== last[2]
+      ) {
         closedRing.push(first);
       }
 
