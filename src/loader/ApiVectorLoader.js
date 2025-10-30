@@ -8,8 +8,9 @@ const defaultColors = {
   waterways: [0.0, 0.0, 1.0],
   landuse: [0.5, 0.5, 0.5],
   points: [0.0, 1.0, 1.0],
-  default: [0.9, 0.6, 0.1],
   mrm_area: [0.6, 0.8, 1.0],
+  detection_area: [0.6, 0.8, 1.0],
+  default: [0.9, 0.6, 0.1],
 };
 
 function getColor(type) {
@@ -30,7 +31,7 @@ export class ApiVectorLoader {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(params), // optional, only if server expects payload
+      body: JSON.stringify(params),
     });
 
     if (!response.ok) {
@@ -55,6 +56,8 @@ export class ApiVectorLoader {
       const coords = feature.geometry.coordinates;
       const color = getColor(feature.properties.type);
 
+      const matNode = new THREE.MeshBasicMaterial({ color: 0x0000ff, transparent: true, opacity: 0.5 });
+      
       const matLine = new LineMaterial({
         color: new THREE.Color().setRGB(...color),
         linewidth: params.linewidth || 2,
@@ -64,16 +67,12 @@ export class ApiVectorLoader {
 
       let object = null;
 
-      if (geomType === "LineString" && !feature.properties.type) {
-        object = ApiVectorLoader.createLine(coords, matLine); // no transform
-      } else if (
-        geomType === "LineString" &&
-        feature.properties.type === "mrm_area"
-      ) {
-        debugger;
-        object = ApiVectorLoader.createPolygon(coords, matLine); // no transform
+      if (geomType === "LineString") {
+        object = ApiVectorLoader.createLineWithNodes(coords, matLine, matNode);
+      } else if (geomType === "Polygon") {
+        object = ApiVectorLoader.createPolygon(coords, matLine);
       } else if (geomType === "Point") {
-        object = ApiVectorLoader.createPoint(coords, matLine); // no transform
+        object = ApiVectorLoader.createPoint(coords, matLine);
       }
 
       if (object) rootNode.add(object);
@@ -113,6 +112,63 @@ export class ApiVectorLoader {
     return line;
   }
 
+  static createLineWithNodes(coords, matLine, nodeColor = 0x0000ff, nodeSize = 0.5) {
+    const group = new THREE.Group();
+
+    const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+    coords.forEach(([x, y, z = 0]) => {
+      min.x = Math.min(min.x, x);
+      min.y = Math.min(min.y, y);
+      min.z = Math.min(min.z, z);
+    });
+
+    const positions = [];
+    coords.forEach(([x, y, z = 0]) => {
+      positions.push(x - min.x, y - min.y, z - min.z);
+    });
+    const lineGeometry = new LineGeometry();
+    lineGeometry.setPositions(positions);
+    const line = new Line2(lineGeometry, matLine);
+    line.computeLineDistances();
+    group.add(line);
+
+    const pointsGeometry = new THREE.BufferGeometry();
+    const pointsArray = new Float32Array(coords.length * 3);
+    coords.forEach(([x, y, z = 0], i) => {
+      pointsArray[i * 3 + 0] = x - min.x;
+      pointsArray[i * 3 + 1] = y - min.y;
+      pointsArray[i * 3 + 2] = z - min.z;
+    });
+    pointsGeometry.setAttribute('position', new THREE.BufferAttribute(pointsArray, 3));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 64;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(32, 32, 32, 0, Math.PI * 2);
+    ctx.fill();
+    const circleTexture = new THREE.CanvasTexture(canvas);
+
+    const pointsMaterial = new THREE.PointsMaterial({
+      size: nodeSize,
+      map: circleTexture,
+      color: nodeColor,
+      alphaTest: 0.5,
+      transparent: true,
+      sizeAttenuation: true,
+    });
+
+    const points = new THREE.Points(pointsGeometry, pointsMaterial);
+    group.add(points);
+
+    group.position.copy(min);
+
+    return group;
+  }
+
+
   static createPolygon(rings, matLine) {
     const group = new THREE.Object3D();
 
@@ -121,24 +177,34 @@ export class ApiVectorLoader {
     }
 
     for (const ring of rings) {
+      const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+      ring.forEach(([x, y, z = 0]) => {
+        min.x = Math.min(min.x, x);
+        min.y = Math.min(min.y, y);
+        min.z = Math.min(min.z, z);
+      });
+
       const closedRing = [...ring];
       const first = ring[0];
       const last = ring[ring.length - 1];
-      if (
-        first[0] !== last[0] ||
-        first[1] !== last[1] ||
-        first[2] !== last[2]
-      ) {
+      if (first[0] !== last[0] || first[1] !== last[1] || first[2] !== last[2]) {
         closedRing.push(first);
       }
 
-      const line = ApiVectorLoader.createLine(closedRing, matLine);
-      if (line) group.add(line);
+      const linePositions = [];
+      closedRing.forEach(([x, y, z = 0]) => {
+        linePositions.push(x - min.x, y - min.y, z - min.z);
+      });
+      const lineGeometry = new LineGeometry();
+      lineGeometry.setPositions(linePositions);
+      const line = new Line2(lineGeometry, matLine);
+      line.computeLineDistances();
+      group.add(line);
 
       const shape = new THREE.Shape();
-      shape.moveTo(closedRing[0][0], closedRing[0][1]);
+      shape.moveTo(closedRing[0][0] - min.x, closedRing[0][1] - min.y);
       for (let i = 1; i < closedRing.length; i++) {
-        shape.lineTo(closedRing[i][0], closedRing[i][1]);
+        shape.lineTo(closedRing[i][0] - min.x, closedRing[i][1] - min.y);
       }
 
       const geometry = new THREE.ShapeGeometry(shape);
@@ -149,10 +215,11 @@ export class ApiVectorLoader {
         opacity: 0.3,
       });
       const mesh = new THREE.Mesh(geometry, material);
-
-      mesh.position.z = closedRing[0][2] || 0;
+      mesh.position.z = closedRing[0][2] - min.z || 0;
 
       group.add(mesh);
+
+      group.position.copy(min);
     }
 
     return group;
