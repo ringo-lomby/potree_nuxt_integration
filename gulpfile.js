@@ -177,6 +177,35 @@ gulp.task('build',
 	)
 );
 
+gulp.task("copy-to-public-folder", () => {
+    return gulp
+      .src(["build/**", "libs/**"], { base: "." })
+      .pipe(gulp.dest("../../public/potree"));
+});
+
+gulp.task(
+  "build:integration",
+  gulp.series(
+    gulp.parallel(
+      "workers",
+      "lazylibs",
+      "shaders",
+      "icons_viewer",
+      "examples_page"
+    ),
+    async function (done) {
+      gulp.src(paths.html).pipe(gulp.dest("build/potree"));
+
+      gulp.src(paths.resources).pipe(gulp.dest("build/potree/resources"));
+
+      gulp.src(["LICENSE"]).pipe(gulp.dest("build/potree"));
+
+      done();
+    },
+    "copy-to-public-folder"
+  )
+);
+
 gulp.task("pack", async function(){
 	exec('rollup -c', function (err, stdout, stderr) {
 		console.log(stdout);
