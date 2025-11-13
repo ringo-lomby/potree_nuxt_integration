@@ -69,7 +69,7 @@ export class ApiVectorLoader {
 
       const matLine = new LineMaterial({
         color: new THREE.Color().setRGB(...color),
-        linewidth: params.linewidth || 2,
+        linewidth: params.linewidth || 8,
         resolution: new THREE.Vector2(1000, 1000),
         dashed: false,
       });
@@ -79,7 +79,7 @@ export class ApiVectorLoader {
       if (geomType === "LineString") {
         object = ApiVectorLoader.createLineWithNodes(coords, matLine, matNode);
       } else if (geomType === "Polygon") {
-        object = ApiVectorLoader.createPolygon(coords, matLine);
+        object = ApiVectorLoader.createPolygon(coords, matLine, matNode);
       } else if (geomType === "Point") {
         object = ApiVectorLoader.createPoint(coords, matLine);
       }
@@ -125,9 +125,10 @@ export class ApiVectorLoader {
     coords,
     matLine,
     nodeColor = 0x0000ff,
-    nodeSize = 0.5
+    nodeSize = 0.3
   ) {
     const group = new THREE.Group();
+    group.type = "LineString";
 
     const min = new THREE.Vector3(Infinity, Infinity, Infinity);
     coords.forEach(([x, y, z = 0]) => {
@@ -136,111 +137,184 @@ export class ApiVectorLoader {
       min.z = Math.min(min.z, z);
     });
 
-    const positions = [];
-    coords.forEach(([x, y, z = 0]) => {
-      positions.push(x - min.x, y - min.y, z - min.z);
+    const relPositions = new Float32Array(coords.length * 3);
+    coords.forEach(([x, y, z = 0], i) => {
+      relPositions[i * 3] = x - min.x;
+      relPositions[i * 3 + 1] = y - min.y;
+      relPositions[i * 3 + 2] = z - min.z;
     });
+
     const lineGeometry = new LineGeometry();
-    lineGeometry.setPositions(positions);
+    lineGeometry.setPositions(relPositions);
     const line = new Line2(lineGeometry, matLine);
     line.computeLineDistances();
     group.add(line);
 
     const pointsGeometry = new THREE.BufferGeometry();
-    const pointsArray = new Float32Array(coords.length * 3);
-    coords.forEach(([x, y, z = 0], i) => {
-      pointsArray[i * 3 + 0] = x - min.x;
-      pointsArray[i * 3 + 1] = y - min.y;
-      pointsArray[i * 3 + 2] = z - min.z;
-    });
     pointsGeometry.setAttribute(
       "position",
-      new THREE.BufferAttribute(pointsArray, 3)
+      new THREE.BufferAttribute(relPositions, 3)
     );
 
     const canvas = document.createElement("canvas");
-    canvas.width = 64;
-    canvas.height = 64;
+    const texSize = 16;
+    canvas.width = texSize;
+    canvas.height = texSize;
     const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#ffffff";
+    ctx.clearRect(0, 0, texSize, texSize);
+    ctx.fillStyle = "#fff";
     ctx.beginPath();
-    ctx.arc(32, 32, 32, 0, Math.PI * 2);
+    ctx.arc(
+      texSize / 2,
+      texSize / 2,
+      (texSize / 2) * (nodeSize / 0.5),
+      0,
+      Math.PI * 2
+    );
     ctx.fill();
     const circleTexture = new THREE.CanvasTexture(canvas);
+    circleTexture.needsUpdate = true;
 
     const pointsMaterial = new THREE.PointsMaterial({
       size: nodeSize,
       map: circleTexture,
       color: nodeColor,
-      alphaTest: 0.5,
       transparent: true,
+      alphaTest: 0.5,
       sizeAttenuation: true,
     });
 
     const points = new THREE.Points(pointsGeometry, pointsMaterial);
+    points.name = "Nodes";
+    points.frustumCulled = false; // keep nodes visible
     group.add(points);
 
     group.position.copy(min);
 
+    const updateArray = new Float32Array(relPositions.length);
+    group.userData.updateLineFromNodes = function () {
+      const posAttr = points.geometry.getAttribute("position");
+      for (let i = 0; i < posAttr.count; i++) {
+        updateArray[i * 3] = posAttr.getX(i);
+        updateArray[i * 3 + 1] = posAttr.getY(i);
+        updateArray[i * 3 + 2] = posAttr.getZ(i);
+      }
+      line.geometry.setPositions(updateArray);
+      line.geometry.computeBoundingBox();
+      line.geometry.computeBoundingSphere();
+      line.geometry.needsUpdate = true;
+    };
+
     return group;
   }
 
-  static createPolygon(rings, matLine) {
-    const group = new THREE.Object3D();
+  static createPolygon(coords, matLine, nodeColor = 0xffffff, nodeSize = 0.3) {
+    const group = new THREE.Group();
+    group.type = "Polygon";
 
-    if (rings.length && typeof rings[0][0] === "number") {
-      rings = [rings];
+    const closedCoords = [...coords];
+    const first = coords[0];
+    const last = coords[coords.length - 1];
+    if (first[0] !== last[0] || first[1] !== last[1] || first[2] !== last[2]) {
+      closedCoords.push(first);
     }
 
-    for (const ring of rings) {
-      const min = new THREE.Vector3(Infinity, Infinity, Infinity);
-      ring.forEach(([x, y, z = 0]) => {
-        min.x = Math.min(min.x, x);
-        min.y = Math.min(min.y, y);
-        min.z = Math.min(min.z, z);
-      });
+    const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+    closedCoords.forEach(([x, y, z = 0]) => {
+      min.x = Math.min(min.x, x);
+      min.y = Math.min(min.y, y);
+      min.z = Math.min(min.z, z);
+    });
 
-      const closedRing = [...ring];
-      const first = ring[0];
-      const last = ring[ring.length - 1];
-      if (
-        first[0] !== last[0] ||
-        first[1] !== last[1] ||
-        first[2] !== last[2]
-      ) {
-        closedRing.push(first);
+    const localPositions = closedCoords.map(([x, y, z = 0]) => [
+      x - min.x,
+      y - min.y,
+      z - min.z,
+    ]);
+
+    const contour = localPositions.map(([x, y]) => new THREE.Vector2(x, y));
+    const indices = THREE.ShapeUtils.triangulateShape(contour, []);
+
+    const flatPositions = localPositions.flat();
+    const meshGeo = new THREE.BufferGeometry();
+    meshGeo.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(flatPositions, 3)
+    );
+    meshGeo.setIndex(indices.flat());
+    meshGeo.computeVertexNormals();
+
+    const meshMat = new THREE.MeshBasicMaterial({
+      color: matLine.color,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.6,
+    });
+
+    const mesh = new THREE.Mesh(meshGeo, meshMat);
+    group.add(mesh);
+
+    const pointsGeo = new THREE.BufferGeometry();
+    pointsGeo.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(flatPositions, 3)
+    );
+
+    const texSize = 16; // smaller texture = faster
+    const canvas = document.createElement("canvas");
+    canvas.width = texSize;
+    canvas.height = texSize;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, texSize, texSize);
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    const radius = (texSize / 2) * (nodeSize / 0.5);
+    ctx.arc(texSize / 2, texSize / 2, radius, 0, Math.PI * 2);
+    ctx.fill();
+    const circleTexture = new THREE.CanvasTexture(canvas);
+    circleTexture.needsUpdate = true;
+
+    const pointsMat = new THREE.PointsMaterial({
+      size: nodeSize,
+      map: circleTexture,
+      color: nodeColor,
+      transparent: true,
+      alphaTest: 0.5,
+      sizeAttenuation: true,
+      depthWrite: false,
+    });
+
+    const points = new THREE.Points(pointsGeo, pointsMat);
+    points.name = "Nodes";
+    group.add(points);
+
+    group.position.copy(min);
+
+    group.userData.updateLineFromNodes = () => {
+      const posAttr = points.geometry.getAttribute("position");
+      const updated = [];
+      const contour = [];
+
+      for (let i = 0; i < posAttr.count; i++) {
+        const x = posAttr.getX(i);
+        const y = posAttr.getY(i);
+        const z = posAttr.getZ(i);
+        updated.push(x, y, z);
+        contour.push(new THREE.Vector2(x, y));
       }
 
-      const linePositions = [];
-      closedRing.forEach(([x, y, z = 0]) => {
-        linePositions.push(x - min.x, y - min.y, z - min.z);
-      });
-      const lineGeometry = new LineGeometry();
-      lineGeometry.setPositions(linePositions);
-      const line = new Line2(lineGeometry, matLine);
-      line.computeLineDistances();
-      group.add(line);
+      const newIndices = THREE.ShapeUtils.triangulateShape(contour, []);
+      const newGeo = new THREE.BufferGeometry();
+      newGeo.setAttribute(
+        "position",
+        new THREE.Float32BufferAttribute(updated, 3)
+      );
+      newGeo.setIndex(newIndices.flat());
+      newGeo.computeVertexNormals();
 
-      const shape = new THREE.Shape();
-      shape.moveTo(closedRing[0][0] - min.x, closedRing[0][1] - min.y);
-      for (let i = 1; i < closedRing.length; i++) {
-        shape.lineTo(closedRing[i][0] - min.x, closedRing[i][1] - min.y);
-      }
-
-      const geometry = new THREE.ShapeGeometry(shape);
-      const material = new THREE.MeshBasicMaterial({
-        color: matLine.color,
-        side: THREE.DoubleSide,
-        transparent: true,
-        opacity: 0.3,
-      });
-      const mesh = new THREE.Mesh(geometry, material);
-      mesh.position.z = closedRing[0][2] - min.z || 0;
-
-      group.add(mesh);
-
-      group.position.copy(min);
-    }
+      mesh.geometry.dispose();
+      mesh.geometry = newGeo;
+    };
 
     return group;
   }
