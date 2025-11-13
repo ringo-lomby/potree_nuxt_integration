@@ -10,7 +10,7 @@ const defaultColors = {
   points: [0.0, 1.0, 1.0],
   mrm_area: [0.6, 0.8, 1.0],
   detection_area: [0.6, 0.8, 1.0],
-  default: [0, 0.439, 0.788],
+  default: [0.039, 0.788, 0],
 };
 
 function getColor(type) {
