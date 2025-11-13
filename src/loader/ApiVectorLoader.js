@@ -69,7 +69,7 @@ export class ApiVectorLoader {
 
       const matLine = new LineMaterial({
         color: new THREE.Color().setRGB(...color),
-        linewidth: params.linewidth || 8,
+        linewidth: params.linewidth || 4,
         resolution: new THREE.Vector2(1000, 1000),
         dashed: false,
       });
