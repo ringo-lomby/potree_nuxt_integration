@@ -667,6 +667,30 @@ export class Sidebar{
 
 		this.viewer.scene.addEventListener("pointcloud_added", onPointCloudAdded);
 		this.viewer.scene.addEventListener("measurement_added", onMeasurementAdded);
+
+		let onPointCloudRemoved = (e) => {
+			let tree = $("#jstree_scene").jstree(true);
+			if(!tree){
+				return;
+			}
+			let pointcloudsNode = tree.get_node('pointclouds');
+
+			let nodeToDelete = null;
+			for(const childId of pointcloudsNode.children){
+				const childNode = tree.get_node(childId);
+				if(childNode.data.uuid === e.pointcloud.uuid){
+					nodeToDelete = childNode;
+					break;
+				}
+			}
+
+			if(nodeToDelete){
+				tree.delete_node(nodeToDelete.id);
+			}
+		};
+
+		this.viewer.scene.addEventListener("pointcloud_removed", onPointCloudRemoved);
+
 		this.viewer.scene.addEventListener("profile_added", onProfileAdded);
 		this.viewer.scene.addEventListener("volume_added", onVolumeAdded);
 		this.viewer.scene.addEventListener("camera_animation_added", onCameraAnimationAdded);
@@ -761,6 +785,7 @@ export class Sidebar{
 			propertiesPanel.setScene(e.scene);
 
 			e.oldScene.removeEventListener("pointcloud_added", onPointCloudAdded);
+			e.oldScene.removeEventListener("pointcloud_removed", onPointCloudRemoved);
 			e.oldScene.removeEventListener("measurement_added", onMeasurementAdded);
 			e.oldScene.removeEventListener("profile_added", onProfileAdded);
 			e.oldScene.removeEventListener("volume_added", onVolumeAdded);
@@ -768,6 +793,7 @@ export class Sidebar{
 			e.oldScene.removeEventListener("measurement_removed", onMeasurementRemoved);
 
 			e.scene.addEventListener("pointcloud_added", onPointCloudAdded);
+			e.scene.addEventListener("pointcloud_removed", onPointCloudRemoved);
 			e.scene.addEventListener("measurement_added", onMeasurementAdded);
 			e.scene.addEventListener("profile_added", onProfileAdded);
 			e.scene.addEventListener("volume_added", onVolumeAdded);
