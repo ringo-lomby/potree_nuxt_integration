@@ -7,6 +7,7 @@
  */
 
 import {Measure} from "../utils/Measure.js";
+import {DrawLineString} from "../utils/DrawLineString.js";
 
 export class GeoJSONExporter{
 
@@ -88,11 +89,29 @@ export class GeoJSONExporter{
 		return features;
 	}
 
+	static drawLineStringToFeature (linestring) {
+		let coords = linestring.points.map(e => e.position.toArray());
+
+		if (coords.length < 2) return null;
+
+		return {
+			'type': 'Feature',
+			'geometry': {
+				'type': 'LineString',
+				'coordinates': coords
+			},
+			'properties': {
+				name: linestring.name
+			}
+		};
+	}
+
 	static toString (measurements) {
 		if (!(measurements instanceof Array)) {
 			measurements = [measurements];
 		}
 
+		let drawLineStrings = measurements.filter(m => m instanceof DrawLineString);
 		measurements = measurements.filter(m => m instanceof Measure);
 
 		let features = [];
@@ -100,6 +119,11 @@ export class GeoJSONExporter{
 			let f = GeoJSONExporter.measurementToFeatures(measure);
 
 			features = features.concat(f);
+		}
+
+		for (let ls of drawLineStrings) {
+			let f = GeoJSONExporter.drawLineStringToFeature(ls);
+			if (f) features.push(f);
 		}
 
 		let geojson = {

@@ -31,6 +31,7 @@ export class Scene extends EventDispatcher{
 		this.profiles = [];
 		this.volumes = [];
 		this.polygonClipVolumes = [];
+		this.drawLineStrings = [];
 		this.cameraAnimations = [];
 		this.orientedImages = [];
 		this.images360 = [];
@@ -281,6 +282,27 @@ export class Scene extends EventDispatcher{
 		}
 	};
 	
+	addDrawLineString(linestring){
+		this.drawLineStrings.push(linestring);
+		this.dispatchEvent({
+			'type': 'draw_linestring_added',
+			'scene': this,
+			'linestring': linestring
+		});
+	}
+
+	removeDrawLineString(linestring){
+		let index = this.drawLineStrings.indexOf(linestring);
+		if (index > -1) {
+			this.drawLineStrings.splice(index, 1);
+			this.dispatchEvent({
+				'type': 'draw_linestring_removed',
+				'scene': this,
+				'linestring': linestring
+			});
+		}
+	}
+
 	addMeasurement(measurement){
 		measurement.lengthUnit = this.lengthUnit;
 		measurement.lengthUnitDisplay = this.lengthUnitDisplay;
@@ -336,6 +358,10 @@ export class Scene extends EventDispatcher{
 
 		while (this.volumes.length > 0) {
 			this.removeVolume(this.volumes[0]);
+		}
+
+		while (this.drawLineStrings.length > 0) {
+			this.removeDrawLineString(this.drawLineStrings[0]);
 		}
 	}
 

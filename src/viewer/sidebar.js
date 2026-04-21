@@ -2,6 +2,8 @@
 import * as THREE from "../../libs/three.js/build/three.module.js";
 import {GeoJSONExporter} from "../exporter/GeoJSONExporter.js"
 import {DXFExporter} from "../exporter/DXFExporter.js"
+import {OSMExporter} from "../exporter/OSMExporter.js"
+import {OSMImporter} from "../importer/OSMImporter.js"
 import {Volume, SphereVolume} from "../utils/Volume.js"
 import {PolygonClipVolume} from "../utils/PolygonClipVolume.js"
 import {PropertiesPanel} from "./PropertyPanels/PropertiesPanel.js"
@@ -27,6 +29,7 @@ export class Sidebar{
 		this.measuringTool = viewer.measuringTool;
 		this.profileTool = viewer.profileTool;
 		this.volumeTool = viewer.volumeTool;
+		this.drawLineStringTool = viewer.drawLineStringTool;
 
 		this.dom = $("#sidebar_root");
 	}
@@ -255,6 +258,23 @@ export class Sidebar{
 			}
 		));
 
+		// DRAW LINESTRING
+		elToolbar.append(this.createToolIcon(
+			Potree.resourcePath + '/icons/linestring.svg',
+			'[title]Draw LineString',
+			() => {
+				$('#menu_scene').next().slideDown();
+				let linestring = this.drawLineStringTool.startInsertion({
+					name: 'LineString'
+				});
+
+				let vectorsRoot = $("#jstree_scene").jstree().get_json("vectors");
+				let jsonNode = vectorsRoot.children.find(child => child.data.uuid === linestring.uuid);
+				$.jstree.reference(jsonNode.id).deselect_all();
+				$.jstree.reference(jsonNode.id).select_node(jsonNode.id);
+			}
+		));
+
 		// ANNOTATION
 		elToolbar.append(this.createToolIcon(
 			Potree.resourcePath + '/icons/annotation.svg',
@@ -307,18 +327,20 @@ export class Sidebar{
 			let geoJSONIcon = `${Potree.resourcePath}/icons/file_geojson.svg`;
 			let dxfIcon = `${Potree.resourcePath}/icons/file_dxf.svg`;
 			let potreeIcon = `${Potree.resourcePath}/icons/file_potree.svg`;
+			let osmIcon = `${Potree.resourcePath}/icons/linestring.svg`;
 
 			elExport.append(`
 				Export: <br>
 				<a href="#" download="measure.json"><img name="geojson_export_button" src="${geoJSONIcon}" class="button-icon" style="height: 24px" /></a>
 				<a href="#" download="measure.dxf"><img name="dxf_export_button" src="${dxfIcon}" class="button-icon" style="height: 24px" /></a>
+				<a href="#" download="export.osm" title="OSM"><img name="osm_export_button" src="${osmIcon}" class="button-icon" style="height: 24px" /></a>
 				<a href="#" download="potree.json5"><img name="potree_export_button" src="${potreeIcon}" class="button-icon" style="height: 24px" /></a>
 			`);
 
 			let elDownloadJSON = elExport.find("img[name=geojson_export_button]").parent();
 			elDownloadJSON.click( (event) => {
 				let scene = this.viewer.scene;
-				let measurements = [...scene.measurements, ...scene.profiles, ...scene.volumes];
+				let measurements = [...scene.measurements, ...scene.profiles, ...scene.volumes, ...scene.drawLineStrings];
 
 				if(measurements.length > 0){
 					let geoJson = GeoJSONExporter.toString(measurements);
@@ -347,6 +369,22 @@ export class Sidebar{
 				}
 			});
 
+			let elDownloadOSM = elExport.find("img[name=osm_export_button]").parent();
+			elDownloadOSM.click( (event) => {
+				let scene = this.viewer.scene;
+				let items = [...scene.measurements, ...scene.drawLineStrings];
+
+				if(items.length > 0){
+					let osm = OSMExporter.toOSM(items);
+
+					let url = window.URL.createObjectURL(new Blob([osm], {type: 'data:application/octet-stream'}));
+					elDownloadOSM.attr('href', url);
+				}else{
+					this.viewer.postError("no linestrings to export");
+					event.preventDefault();
+				}
+			});
+
 			let elDownloadPotree = elExport.find("img[name=potree_export_button]").parent();
 			elDownloadPotree.click( (event) => {
 
@@ -355,6 +393,43 @@ export class Sidebar{
 
 				let url = window.URL.createObjectURL(new Blob([dataString], {type: 'data:application/octet-stream'}));
 				elDownloadPotree.attr('href', url);
+			});
+		}
+
+		{
+			let elImport = elScene.next().find("#scene_export");
+			let osmIcon = `${Potree.resourcePath}/icons/linestring.svg`;
+
+			elImport.after(`
+				<div id="scene_import" style="padding: 6px 0;">
+					Import: <br>
+					<input type="file" id="osm_import_file" accept=".osm,.xml" style="display: none" />
+					<img id="osm_import_button" src="${osmIcon}" class="button-icon" style="height: 24px; cursor: pointer;" title="Import OSM" />
+				</div>
+			`);
+
+			let elImportButton = elScene.next().find("#osm_import_button");
+			let elImportFile = elScene.next().find("#osm_import_file");
+
+			elImportButton.click(() => {
+				elImportFile.click();
+			});
+
+			elImportFile.on('change', (event) => {
+				let file = event.target.files[0];
+				if (!file) return;
+
+				OSMImporter.loadFromFile(this.viewer, file).then((result) => {
+					this.viewer.postMessage(`Loading ${result.wayCount} linestrings from ${file.name}...`);
+					result.promise.then(() => {
+						this.viewer.postMessage(`Imported ${result.wayCount} linestrings from ${file.name}`);
+					});
+				}).catch((err) => {
+					this.viewer.postError(`Failed to import OSM: ${err.message}`);
+				});
+
+				// reset so the same file can be re-imported
+				elImportFile.val('');
 			});
 		}
 
@@ -584,6 +659,12 @@ export class Sidebar{
 			});
 		};
 
+		let onDrawLineStringAdded = (e) => {
+			let linestring = e.linestring;
+			let icon = Utils.getMeasurementIcon(linestring);
+			createNode("vectors", linestring.name, icon, linestring);
+		};
+
 		let onProfileAdded = (e) => {
 			let profile = e.profile;
 			let icon = Utils.getMeasurementIcon(profile);
@@ -691,6 +772,7 @@ export class Sidebar{
 
 		this.viewer.scene.addEventListener("pointcloud_removed", onPointCloudRemoved);
 
+		this.viewer.scene.addEventListener("draw_linestring_added", onDrawLineStringAdded);
 		this.viewer.scene.addEventListener("profile_added", onProfileAdded);
 		this.viewer.scene.addEventListener("volume_added", onVolumeAdded);
 		this.viewer.scene.addEventListener("camera_animation_added", onCameraAnimationAdded);
@@ -728,10 +810,18 @@ export class Sidebar{
 			tree.jstree("delete_node", jsonNode.id);
 		};
 
+		let onDrawLineStringRemoved = (e) => {
+			let vectorsRoot = $("#jstree_scene").jstree().get_json("vectors");
+			let jsonNode = vectorsRoot.children.find(child => child.data.uuid === e.linestring.uuid);
+
+			tree.jstree("delete_node", jsonNode.id);
+		};
+
 		this.viewer.scene.addEventListener("measurement_removed", onMeasurementRemoved);
 		this.viewer.scene.addEventListener("volume_removed", onVolumeRemoved);
 		this.viewer.scene.addEventListener("polygon_clip_volume_removed", onPolygonClipVolumeRemoved);
 		this.viewer.scene.addEventListener("profile_removed", onProfileRemoved);
+		this.viewer.scene.addEventListener("draw_linestring_removed", onDrawLineStringRemoved);
 
 		{
 			let annotationIcon = `${Potree.resourcePath}/icons/annotation.svg`;
@@ -777,6 +867,10 @@ export class Sidebar{
 			onProfileAdded({profile: profile});
 		}
 
+		for(let linestring of scene.drawLineStrings){
+			onDrawLineStringAdded({linestring: linestring});
+		}
+
 		{
 			createNode(otherID, "Camera", null, new THREE.Camera());
 		}
@@ -791,6 +885,8 @@ export class Sidebar{
 			e.oldScene.removeEventListener("volume_added", onVolumeAdded);
 			e.oldScene.removeEventListener("polygon_clip_volume_added", onVolumeAdded);
 			e.oldScene.removeEventListener("measurement_removed", onMeasurementRemoved);
+			e.oldScene.removeEventListener("draw_linestring_added", onDrawLineStringAdded);
+			e.oldScene.removeEventListener("draw_linestring_removed", onDrawLineStringRemoved);
 
 			e.scene.addEventListener("pointcloud_added", onPointCloudAdded);
 			e.scene.addEventListener("pointcloud_removed", onPointCloudRemoved);
@@ -799,6 +895,8 @@ export class Sidebar{
 			e.scene.addEventListener("volume_added", onVolumeAdded);
 			e.scene.addEventListener("polygon_clip_volume_added", onVolumeAdded);
 			e.scene.addEventListener("measurement_removed", onMeasurementRemoved);
+			e.scene.addEventListener("draw_linestring_added", onDrawLineStringAdded);
+			e.scene.addEventListener("draw_linestring_removed", onDrawLineStringRemoved);
 		});
 
 	}

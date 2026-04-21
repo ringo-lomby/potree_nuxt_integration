@@ -6,6 +6,7 @@ import {Annotation} from "../../Annotation.js";
 import {Measure} from "../../utils/Measure.js";
 import {Profile} from "../../utils/Profile.js";
 import {Volume, BoxVolume, SphereVolume} from "../../utils/Volume.js";
+import {DrawLineString} from "../../utils/DrawLineString.js";
 import {CameraAnimation} from "../../modules/CameraAnimation/CameraAnimation.js";
 import {PointSizeType, PointShape, ElevationGradientRepeat} from "../../defines.js";
 import {Gradients} from "../../materials/Gradients.js";
@@ -22,6 +23,7 @@ import {ProfilePanel} from "./ProfilePanel.js";
 import {CameraPanel} from "./CameraPanel.js";
 import {AnnotationPanel} from "./AnnotationPanel.js";
 import { CameraAnimationPanel } from "./CameraAnimationPanel.js";
+import { DrawLineStringPanel } from "./DrawLineStringPanel.js";
 
 export class PropertiesPanel{
 
@@ -52,6 +54,8 @@ export class PropertiesPanel{
 
 		if(object instanceof PointCloudTree){
 			this.setPointCloud(object);
+		}else if(object instanceof DrawLineString){
+			this.setDrawLineString(object);
 		}else if(object instanceof Measure || object instanceof Profile || object instanceof Volume){
 			this.setMeasurement(object);
 		}else if(object instanceof THREE.Camera){
@@ -890,6 +894,11 @@ export class PropertiesPanel{
 	}
 
 	
+
+	setDrawLineString(object){
+		let panel = new DrawLineStringPanel(this.viewer, object, this);
+		this.container.append(panel.elContent);
+	}
 
 	setMeasurement(object){
 

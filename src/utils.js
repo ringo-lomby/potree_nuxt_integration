@@ -5,6 +5,7 @@ import {Volume} from "./utils/Volume.js";
 import {Profile} from "./utils/Profile.js";
 import {Measure} from "./utils/Measure.js";
 import {PolygonClipVolume} from "./utils/PolygonClipVolume.js";
+import {DrawLineString} from "./utils/DrawLineString.js";
 
 export class Utils {
 	static async loadShapefileFeatures (file, callback) {
@@ -842,6 +843,8 @@ export class Utils {
 			} else {
 				return `${Potree.resourcePath}/icons/distance.svg`;
 			}
+		} else if (measurement instanceof DrawLineString) {
+			return `${Potree.resourcePath}/icons/linestring.svg`;
 		} else if (measurement instanceof Profile) {
 			return `${Potree.resourcePath}/icons/profile.svg`;
 		} else if (measurement instanceof Volume) {
