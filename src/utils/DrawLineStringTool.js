@@ -17,6 +17,8 @@ export class DrawLineStringTool extends EventDispatcher {
 			});
 		});
 
+		this._insertingLinestring = null;
+
 		this.scene = new THREE.Scene();
 		this.scene.name = 'scene_draw_linestring';
 		this.light = new THREE.PointLight(0xffffff, 1.0);
@@ -83,6 +85,11 @@ export class DrawLineStringTool extends EventDispatcher {
 
 		this.scene.add(linestring);
 
+		// Cursor ghost point — follows the mouse each frame via update()
+		linestring.addMarker(new THREE.Vector3(0, 0, 0));
+		linestring.setGhostIndex(0);
+		this._insertingLinestring = linestring;
+
 		let cancel = {
 			removeLastMarker: true,
 			callback: null
@@ -90,6 +97,7 @@ export class DrawLineStringTool extends EventDispatcher {
 
 		let lastClickTime = 0;
 
+		// Click to commit the current cursor position as a permanent node
 		let insertionCallback = (e) => {
 			if (e.button === THREE.MOUSE.LEFT) {
 				let now = Date.now();
@@ -102,38 +110,38 @@ export class DrawLineStringTool extends EventDispatcher {
 					return;
 				}
 
-				// commit ghost → normal, then add new ghost at same position
+				// Commit cursor position, then start a new cursor at the same spot
+				let cursorPos = linestring.points[linestring.ghostIndex].position.clone();
 				linestring.setGhostIndex(-1);
-				linestring.addMarker(linestring.points[linestring.points.length - 1].position.clone());
+				linestring.addMarker(cursorPos);
 				linestring.setGhostIndex(linestring.points.length - 1);
 
-				this.viewer.inputHandler.startDragging(
-					linestring.spheres[linestring.spheres.length - 1]);
 			} else if (e.button === THREE.MOUSE.RIGHT) {
 				cancel.callback();
 			}
 		};
 
-		// active only during insertion: Backspace = undo last point, Enter = finish
 		let insertionKeyHandler = (e) => {
 			if (e.key === 'Backspace') {
 				e.preventDefault();
+				// Remove the last committed node (second-to-last; last is the cursor)
 				if (linestring.points.length >= 2) {
 					linestring.removeMarker(linestring.points.length - 2);
 					linestring.setGhostIndex(linestring.points.length - 1);
 				}
-			} else if (e.key === 'Enter') {
+			} else if (e.key === 'Enter' || e.key === 'Escape') {
 				e.preventDefault();
 				cancel.removeLastMarker = true;
 				cancel.callback();
 			}
 		};
 
-		cancel.callback = e => {
+		cancel.callback = () => {
 			if (cancel.removeLastMarker && linestring.points.length > 0) {
 				linestring.removeMarker(linestring.points.length - 1);
 			}
 			linestring.setGhostIndex(-1);
+			this._insertingLinestring = null;
 			domElement.removeEventListener('mouseup', insertionCallback, false);
 			document.removeEventListener('keydown', insertionKeyHandler);
 			this.viewer.removeEventListener('cancel_insertions', cancel.callback);
@@ -147,11 +155,6 @@ export class DrawLineStringTool extends EventDispatcher {
 		domElement.addEventListener('mouseup', insertionCallback, false);
 		document.addEventListener('keydown', insertionKeyHandler);
 
-		linestring.addMarker(new THREE.Vector3(0, 0, 0));
-		linestring.setGhostIndex(0);
-		this.viewer.inputHandler.startDragging(
-			linestring.spheres[linestring.spheres.length - 1]);
-
 		this.viewer.scene.addDrawLineString(linestring);
 
 		return linestring;
@@ -160,6 +163,22 @@ export class DrawLineStringTool extends EventDispatcher {
 	update () {
 		let camera = this.viewer.scene.getActiveCamera();
 		let linestrings = this.viewer.scene.drawLineStrings;
+
+		// JOSM-style cursor: move the ghost node to wherever the mouse intersects the point cloud
+		if (this._insertingLinestring) {
+			let ls = this._insertingLinestring;
+			let ghostIdx = ls.ghostIndex;
+			if (ghostIdx >= 0) {
+				let mouse = this.viewer.inputHandler.mouse;
+				let I = Utils.getMousePointCloudIntersection(
+					mouse, camera, this.viewer,
+					this.viewer.scene.pointclouds,
+					{pickClipped: true});
+				if (I) {
+					ls.setPosition(ghostIdx, I.location);
+				}
+			}
+		}
 
 		const renderAreaSize = this.renderer.getSize(new THREE.Vector2());
 		let clientWidth = renderAreaSize.width;
