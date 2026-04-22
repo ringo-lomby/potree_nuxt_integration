@@ -4,7 +4,7 @@ import {GeoJSONExporter} from "../exporter/GeoJSONExporter.js"
 import {DXFExporter} from "../exporter/DXFExporter.js"
 import {OSMExporter} from "../exporter/OSMExporter.js"
 import {OSMImporter} from "../importer/OSMImporter.js"
-import {Volume, SphereVolume} from "../utils/Volume.js"
+import {Volume, BoxVolume, SphereVolume} from "../utils/Volume.js"
 import {PolygonClipVolume} from "../utils/PolygonClipVolume.js"
 import {PropertiesPanel} from "./PropertyPanels/PropertiesPanel.js"
 import {PointCloudTree} from "../PointCloudTree.js"
@@ -259,7 +259,7 @@ export class Sidebar{
 		));
 
 		// DRAW LINESTRING
-		elToolbar.append(this.createToolIcon(
+		$('#map_tools').append(this.createToolIcon(
 			Potree.resourcePath + '/icons/linestring.svg',
 			'[title]Draw LineString',
 			() => {
@@ -272,6 +272,36 @@ export class Sidebar{
 				let jsonNode = vectorsRoot.children.find(child => child.data.uuid === linestring.uuid);
 				$.jstree.reference(jsonNode.id).deselect_all();
 				$.jstree.reference(jsonNode.id).select_node(jsonNode.id);
+			}
+		));
+
+		// CLIPPED MAP
+		$('#map_tools').append(this.createToolIcon(
+			Potree.resourcePath + '/icons/clip_volume.svg',
+			'[title]Clipped Map',
+			() => {
+				const scene = this.viewer.scene;
+				const box = scene.getBoundingBox();
+
+				if (box.isEmpty()) return;
+
+				const center = box.getCenter(new THREE.Vector3());
+				const size = box.getSize(new THREE.Vector3());
+
+				// small padding so edge points are not clipped
+				size.multiplyScalar(1.05);
+
+				const volume = new BoxVolume();
+				volume.name = 'Clipped Map';
+				volume.clip = true;
+				volume.position.copy(center);
+				volume.scale.copy(size);
+
+				scene.addVolume(volume);
+
+				// activate show-inside clipping so the box takes effect immediately
+				this.viewer.setClipTask(ClipTask.SHOW_INSIDE);
+				$('#cliptask_options_show_inside').trigger('click');
 			}
 		));
 

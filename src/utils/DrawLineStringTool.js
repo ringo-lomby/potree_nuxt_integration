@@ -18,6 +18,10 @@ export class DrawLineStringTool extends EventDispatcher {
 		});
 
 		this._insertingLinestring = null;
+		this._undoStack = [];
+		this._redoStack = [];
+		this._lsListeners    = new Map();
+		this._dragSnapshots  = new Map();
 
 		this.scene = new THREE.Scene();
 		this.scene.name = 'scene_draw_linestring';
@@ -26,26 +30,69 @@ export class DrawLineStringTool extends EventDispatcher {
 
 		this.viewer.inputHandler.registerInteractiveScene(this.scene);
 
-		this.onRemove = (e) => { this.scene.remove(e.linestring); };
-		this.onAdd = (e) => { this.scene.add(e.linestring); };
+		this.onRemove = (e) => {
+			this.scene.remove(e.linestring);
+			let h = this._lsListeners.get(e.linestring);
+			if (h) {
+				e.linestring.removeEventListener('drag_start',     h.onDragStart);
+				e.linestring.removeEventListener('marker_dropped', h.onDropped);
+				this._lsListeners.delete(e.linestring);
+			}
+		};
+
+		this.onAdd = (e) => {
+			this.scene.add(e.linestring);
+			let ls = e.linestring;
+
+			let onDragStart = () => {
+				this._dragSnapshots.set(ls, this._snapshotPoints(ls));
+			};
+			let onDropped = () => {
+				let before = this._dragSnapshots.get(ls);
+				if (before !== undefined) {
+					this._pushHistory(ls, before);
+					this._dragSnapshots.delete(ls);
+				}
+			};
+
+			ls.addEventListener('drag_start',     onDragStart);
+			ls.addEventListener('marker_dropped', onDropped);
+			this._lsListeners.set(ls, { onDragStart, onDropped });
+		};
 
 		for (let ls of viewer.scene.drawLineStrings) {
 			this.onAdd({linestring: ls});
 		}
 
 		viewer.addEventListener("update", this.update.bind(this));
-		viewer.addEventListener("render.pass.perspective_overlay", this.render.bind(this));
+		viewer.addEventListener("render.pass.scene", this.render.bind(this));
 		viewer.addEventListener("scene_changed", this.onSceneChange.bind(this));
 
 		viewer.scene.addEventListener('draw_linestring_added', this.onAdd);
 		viewer.scene.addEventListener('draw_linestring_removed', this.onRemove);
 
-		// Delete key to remove selected node on any linestring
+		// Keyboard handling for selected nodes
 		this._onKeyDown = (e) => {
-			if (e.key === 'Delete') {
+			if (e.ctrlKey && !e.shiftKey && e.key === 'z') {
+				e.preventDefault();
+				let entry = this._undoStack.pop();
+				if (entry) {
+					this._redoStack.push(entry);
+					this._applySnapshot(entry.ls, entry.before);
+				}
+			} else if (e.ctrlKey && (e.key === 'y' || (e.shiftKey && e.key === 'z'))) {
+				e.preventDefault();
+				let entry = this._redoStack.pop();
+				if (entry) {
+					this._undoStack.push(entry);
+					this._applySnapshot(entry.ls, entry.after);
+				}
+			} else if (e.key === 'Delete') {
 				for (let ls of this.viewer.scene.drawLineStrings) {
 					if (ls.selectedNodeIndex >= 0) {
+						let before = this._snapshotPoints(ls);
 						ls.deleteSelectedNode();
+						this._pushHistory(ls, before);
 						break;
 					}
 				}
@@ -56,9 +103,129 @@ export class DrawLineStringTool extends EventDispatcher {
 						break;
 					}
 				}
+			} else if (e.key === 'Insert') {
+				for (let ls of this.viewer.scene.drawLineStrings) {
+					if (ls.selectedNodeIndex >= 0) {
+						e.preventDefault();
+						let i = ls.selectedNodeIndex;
+						let before = this._snapshotPoints(ls);
+						if (i < ls.points.length - 1) {
+							ls.insertMarkerAfter(i);
+							ls.selectNode(i + 1);
+						} else {
+							ls.addMarker(ls.points[i].position.clone());
+							ls.selectNode(ls.points.length - 1);
+						}
+						this._pushHistory(ls, before);
+						break;
+					}
+				}
+			} else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+				for (let ls of this.viewer.scene.drawLineStrings) {
+					if (ls.selectedNodeIndex >= 0) {
+						e.preventDefault();
+
+						let i   = ls.selectedNodeIndex;
+						let pos = ls.points[i].position.clone();
+						let before = this._snapshotPoints(ls);
+						let camera = this.viewer.scene.getActiveCamera();
+
+						let step = camera.position.distanceTo(pos) * 0.005;
+						if (e.shiftKey) step *= 10;
+
+						let right = new THREE.Vector3();
+						let up    = new THREE.Vector3();
+						camera.matrixWorld.extractBasis(right, up, new THREE.Vector3());
+						right.z = 0; if (right.length() > 0.001) right.normalize(); else right.set(1, 0, 0);
+						up.z    = 0; if (up.length()    > 0.001) up.normalize();    else up.set(0, 1, 0);
+
+						if (e.key === 'ArrowLeft')  pos.addScaledVector(right, -step);
+						if (e.key === 'ArrowRight') pos.addScaledVector(right,  step);
+						if (e.key === 'ArrowUp')    pos.addScaledVector(up,     step);
+						if (e.key === 'ArrowDown')  pos.addScaledVector(up,    -step);
+
+						ls.setPosition(i, pos);
+						this._pushHistory(ls, before);
+						break;
+					}
+				}
 			}
 		};
 		document.addEventListener('keydown', this._onKeyDown);
+
+		// Ctrl + left-click to select a node, bypassing Potree's inputHandler
+		this._onDblClick = (e) => {
+			if (!e.ctrlKey || e.button !== 0) return;
+
+			let rect = this.viewer.renderer.domElement.getBoundingClientRect();
+			let x = e.clientX - rect.left;
+			let y = e.clientY - rect.top;
+			let renderAreaSize = this.renderer.getSize(new THREE.Vector2());
+
+			let nmouse = new THREE.Vector2(
+				 (x / renderAreaSize.width)  * 2 - 1,
+				-(y / renderAreaSize.height) * 2 + 1
+			);
+
+			let raycaster = new THREE.Raycaster();
+			raycaster.setFromCamera(nmouse, this.viewer.scene.getActiveCamera());
+
+			let hitLs   = null;
+			let hitIdx  = -1;
+			let hitDist = Infinity;
+
+			for (let ls of this.viewer.scene.drawLineStrings) {
+				for (let i = 0; i < ls.spheres.length; i++) {
+					let sphere = ls.spheres[i];
+					if (!sphere.visible) continue;
+					let hits = [];
+					sphere.raycast(raycaster, hits);
+					if (hits.length > 0 && hits[0].distance < hitDist) {
+						hitDist = hits[0].distance;
+						hitLs   = ls;
+						hitIdx  = i;
+					}
+				}
+			}
+
+			if (hitLs) {
+				// deselect nodes on other linestrings
+				for (let ls of this.viewer.scene.drawLineStrings) {
+					if (ls !== hitLs) ls.selectNode(-1);
+				}
+				hitLs.selectNode(hitIdx);
+			}
+		};
+		this.viewer.renderer.domElement.addEventListener('click', this._onDblClick);
+	}
+
+	_snapshotPoints (ls) {
+		return ls.points.map(p => p.position.clone());
+	}
+
+	_pushHistory (ls, before) {
+		let after = this._snapshotPoints(ls);
+
+		// Skip no-ops (e.g. delete attempted on a 2-point linestring)
+		if (after.length === before.length && after.every((p, i) => p.equals(before[i]))) return;
+
+		if (this._undoStack.length >= 50) this._undoStack.shift();
+		this._undoStack.push({ ls, before, after });
+
+		this._redoStack = [];
+	}
+
+	_applySnapshot (ls, snapshot) {
+		while (ls.points.length > snapshot.length) {
+			ls.removeMarker(ls.points.length - 1);
+		}
+		while (ls.points.length < snapshot.length) {
+			ls.addMarker(snapshot[ls.points.length].clone());
+		}
+		for (let i = 0; i < snapshot.length; i++) {
+			ls.setPosition(i, snapshot[i].clone());
+		}
+		ls.selectNode(-1);
 	}
 
 	onSceneChange (e) {
@@ -259,13 +426,17 @@ export class DrawLineStringTool extends EventDispatcher {
 			for (let edge of ls.edges) {
 				edge.material.resolution.set(clientWidth, clientHeight);
 			}
+			for (let edge of ls.outlineEdges) {
+				edge.material.resolution.set(clientWidth, clientHeight);
+			}
 		}
 	}
 
-	render () {
+	render (e) {
+		// Skip sub-passes that target an offscreen render target (e.g. EDL's rtRegular pass).
+		// We only want to render when drawing to the screen so depth-testing works correctly.
+		if (e && e.renderTarget) return;
 		this.viewer.renderer.render(this.scene, this.viewer.scene.getActiveCamera());
-		// depthWrite:false on overlay materials leaves gl.depthMask(false), which prevents
-		// renderer.clear() from clearing the EDL render target's depth buffer next frame.
 		this.viewer.renderer.getContext().depthMask(true);
 	}
 }

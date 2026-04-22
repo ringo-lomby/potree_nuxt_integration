@@ -20,6 +20,7 @@ export class DrawLineString extends THREE.Object3D {
 		this.sphereGeometry = new THREE.SphereGeometry(0.4, 6, 6);
 		this.spheres = [];
 		this.edges = [];
+		this.outlineEdges = [];
 		this.ghostIndex = -1;
 
 		this._ghostRing = null;
@@ -47,31 +48,64 @@ export class DrawLineString extends THREE.Object3D {
 		});
 	}
 
+	_createEdge (color, linewidth) {
+		let lineGeometry = new LineGeometry();
+		lineGeometry.setPositions([0, 0, 0, 0, 0, 0]);
+		let lineMaterial = new LineMaterial({
+			color: color,
+			linewidth: linewidth,
+			resolution: new THREE.Vector2(1000, 1000),
+			depthTest: true,
+		});
+		let edge = new Line2(lineGeometry, lineMaterial);
+		edge.visible = true;
+		return edge;
+	}
+
 	_setupSphereEvents (sphere) {
+		let dragging = false;
+
 		let drag = (e) => {
+			let i = this.spheres.indexOf(e.drag.object);
+			if (i === -1) return;
+
+			if (!dragging) {
+				dragging = true;
+				this.dispatchEvent({ type: 'drag_start', measurement: this });
+			}
+
+			let camera = e.viewer.scene.getActiveCamera();
+			let renderAreaSize = e.viewer.renderer.getSize(new THREE.Vector2());
+			let mouse = e.drag.end;
+
+			let nmouse = new THREE.Vector2(
+				(mouse.x / renderAreaSize.width)  *  2 - 1,
+				-(mouse.y / renderAreaSize.height) *  2 + 1
+			);
+
+			// Try point cloud first for Z-accurate snapping, fall back to a
+			// horizontal plane at the node's current elevation so the node can
+			// be moved freely even when the cursor is off the cloud.
 			let I = Utils.getMousePointCloudIntersection(
-				e.drag.end,
-				e.viewer.scene.getActiveCamera(),
-				e.viewer,
-				e.viewer.scene.pointclouds,
+				mouse, camera, e.viewer, e.viewer.scene.pointclouds,
 				{pickClipped: true});
 
 			if (I) {
-				let i = this.spheres.indexOf(e.drag.object);
-				if (i !== -1) {
-					let pt = this.points[i];
-					for (let key of Object.keys(pt)) {
-						if (!I.point[key]) delete pt[key];
-					}
-					for (let key of Object.keys(I.point).filter(e => e !== 'position')) {
-						pt[key] = I.point[key];
-					}
-					this.setPosition(i, I.location);
+				this.setPosition(i, I.location);
+			} else {
+				let currentZ = this.points[i].position.z;
+				let plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -currentZ);
+				let raycaster = new THREE.Raycaster();
+				raycaster.setFromCamera(nmouse, camera);
+				let hit = new THREE.Vector3();
+				if (raycaster.ray.intersectPlane(plane, hit)) {
+					this.setPosition(i, hit);
 				}
 			}
 		};
 
 		let drop = e => {
+			dragging = false;
 			let i = this.spheres.indexOf(e.drag.object);
 			if (i !== -1) {
 				this.dispatchEvent({
@@ -149,10 +183,16 @@ export class DrawLineString extends THREE.Object3D {
 		for (let edge of this.edges) {
 			edge.material.color.copy(this.color);
 		}
+		for (let outline of this.outlineEdges) {
+			outline.material.color.set(0x111111);
+		}
 
-		// ghost edge (leading into ghost point) gets a lighter color
+		// ghost edge gets a lighter color so it's visually distinct from committed edges
 		if (this.ghostIndex > 0 && this.edges[this.ghostIndex - 1]) {
 			this.edges[this.ghostIndex - 1].material.color.set(0xaaaaaa);
+			if (this.outlineEdges[this.ghostIndex - 1]) {
+				this.outlineEdges[this.ghostIndex - 1].material.color.set(0x444444);
+			}
 		}
 
 		// highlight selected node (skip if it's the ghost)
@@ -179,23 +219,15 @@ export class DrawLineString extends THREE.Object3D {
 		this.add(sphere);
 		this.spheres.push(sphere);
 
-		// edge
-		{
-			let lineGeometry = new LineGeometry();
-			lineGeometry.setPositions([0, 0, 0, 0, 0, 0]);
+		// outline edge added first so it renders behind the colored edge
+		let outlineEdge = this._createEdge(0x111111, 5);
+		this.add(outlineEdge);
+		this.outlineEdges.push(outlineEdge);
 
-			let lineMaterial = new LineMaterial({
-				color: this.color,
-				linewidth: 2,
-				resolution: new THREE.Vector2(1000, 1000),
-				depthTest: false,
-			});
-
-			let edge = new Line2(lineGeometry, lineMaterial);
-			edge.visible = true;
-			this.add(edge);
-			this.edges.push(edge);
-		}
+		// colored edge on top of outline
+		let edge = this._createEdge(this.color.getHex(), 3);
+		this.add(edge);
+		this.edges.push(edge);
 
 		this._setupSphereEvents(sphere);
 
@@ -224,23 +256,15 @@ export class DrawLineString extends THREE.Object3D {
 		this.add(sphere);
 		this.spheres.splice(index + 1, 0, sphere);
 
-		// edge
-		{
-			let lineGeometry = new LineGeometry();
-			lineGeometry.setPositions([0, 0, 0, 0, 0, 0]);
+		// outline edge
+		let outlineEdge = this._createEdge(0x111111, 5);
+		this.add(outlineEdge);
+		this.outlineEdges.splice(index + 1, 0, outlineEdge);
 
-			let lineMaterial = new LineMaterial({
-				color: this.color,
-				linewidth: 2,
-				resolution: new THREE.Vector2(1000, 1000),
-				depthTest: false,
-			});
-
-			let edge = new Line2(lineGeometry, lineMaterial);
-			edge.visible = true;
-			this.add(edge);
-			this.edges.splice(index + 1, 0, edge);
-		}
+		// colored edge
+		let edge = this._createEdge(this.color.getHex(), 3);
+		this.add(edge);
+		this.edges.splice(index + 1, 0, edge);
 
 		this._setupSphereEvents(sphere);
 
@@ -267,6 +291,9 @@ export class DrawLineString extends THREE.Object3D {
 		let edgeIndex = (index === 0) ? 0 : (index - 1);
 		this.remove(this.edges[edgeIndex]);
 		this.edges.splice(edgeIndex, 1);
+
+		this.remove(this.outlineEdges[edgeIndex]);
+		this.outlineEdges.splice(edgeIndex, 1);
 
 		this.spheres.splice(index, 1);
 
@@ -346,19 +373,29 @@ export class DrawLineString extends THREE.Object3D {
 
 			sphere.position.copy(point.position);
 
-			// edge
-			let edge = this.edges[i];
-			edge.position.copy(point.position);
-
-			edge.geometry.setPositions([
+			let positions = [
 				0, 0, 0,
 				...nextPoint.position.clone().sub(point.position).toArray(),
-			]);
+			];
+			let isVisible = i < lastIndex || this.closed;
 
+			// outline
+			let outlineEdge = this.outlineEdges[i];
+			outlineEdge.position.copy(point.position);
+			outlineEdge.geometry.setPositions(positions);
+			outlineEdge.geometry.verticesNeedUpdate = true;
+			outlineEdge.geometry.computeBoundingSphere();
+			outlineEdge.computeLineDistances();
+			outlineEdge.visible = isVisible;
+
+			// colored edge
+			let edge = this.edges[i];
+			edge.position.copy(point.position);
+			edge.geometry.setPositions(positions);
 			edge.geometry.verticesNeedUpdate = true;
 			edge.geometry.computeBoundingSphere();
 			edge.computeLineDistances();
-			edge.visible = i < lastIndex || this.closed;
+			edge.visible = isVisible;
 		}
 
 		// reapply highlight colors after geometry update
