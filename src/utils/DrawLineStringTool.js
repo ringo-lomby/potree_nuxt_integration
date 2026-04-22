@@ -164,18 +164,41 @@ export class DrawLineStringTool extends EventDispatcher {
 		let camera = this.viewer.scene.getActiveCamera();
 		let linestrings = this.viewer.scene.drawLineStrings;
 
-		// JOSM-style cursor: move the ghost node to wherever the mouse intersects the point cloud
+		// JOSM-style cursor: snap to point cloud when available, else fall back to a
+		// horizontal plane at the elevation of the last committed node.
 		if (this._insertingLinestring) {
 			let ls = this._insertingLinestring;
 			let ghostIdx = ls.ghostIndex;
 			if (ghostIdx >= 0) {
+				const renderAreaSize = this.renderer.getSize(new THREE.Vector2());
 				let mouse = this.viewer.inputHandler.mouse;
+
 				let I = Utils.getMousePointCloudIntersection(
 					mouse, camera, this.viewer,
 					this.viewer.scene.pointclouds,
 					{pickClipped: true});
+
 				if (I) {
 					ls.setPosition(ghostIdx, I.location);
+				} else {
+					// Fallback: intersect mouse ray with a horizontal plane at the
+					// elevation of the last committed node (Z-up coordinate system).
+					let refZ = ghostIdx > 0
+						? ls.points[ghostIdx - 1].position.z
+						: (ls.points[ghostIdx].position.z || 0);
+
+					let nmouse = new THREE.Vector2(
+						(mouse.x / renderAreaSize.width)  *  2 - 1,
+						-(mouse.y / renderAreaSize.height) *  2 + 1);
+					let raycaster = new THREE.Raycaster();
+					raycaster.setFromCamera(nmouse, camera);
+
+					// Plane: z = refZ  →  normal=(0,0,1), constant=-refZ
+					let plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -refZ);
+					let hit = new THREE.Vector3();
+					if (raycaster.ray.intersectPlane(plane, hit)) {
+						ls.setPosition(ghostIdx, hit);
+					}
 				}
 			}
 		}
