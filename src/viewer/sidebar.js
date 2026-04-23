@@ -275,6 +275,61 @@ export class Sidebar{
 			}
 		));
 
+		// IMPORT LINESTRINGS (OSM)
+		{
+			let elImportFile = $('<input type="file" accept=".osm,.xml" style="display:none"/>');
+			$('body').append(elImportFile);
+
+			$('#map_tools').append(this.createToolIcon(
+				Potree.resourcePath + '/icons/arrow_up.svg',
+				'[title]Import LineStrings (OSM)',
+				() => {
+					$('#menu_scene').next().slideDown();
+					elImportFile.click();
+				}
+			));
+
+			elImportFile.on('change', (event) => {
+				let file = event.target.files[0];
+				if (!file) return;
+
+				OSMImporter.loadFromFile(this.viewer, file).then((result) => {
+					this.viewer.postMessage(`Loading ${result.wayCount} linestrings from ${file.name}...`);
+					result.promise.then(() => {
+						this.viewer.postMessage(`Imported ${result.wayCount} linestrings from ${file.name}`);
+					});
+				}).catch((err) => {
+					this.viewer.postError(`Failed to import OSM: ${err.message}`);
+				});
+
+				elImportFile.val('');
+			});
+		}
+
+		// SAVE LINESTRINGS (OSM)
+		$('#map_tools').append(this.createToolIcon(
+			Potree.resourcePath + '/icons/arrow_down.svg',
+			'[title]Save all LineStrings as OSM',
+			() => {
+				let linestrings = this.viewer.scene.drawLineStrings;
+
+				if (linestrings.length === 0) {
+					this.viewer.postError("no linestrings to save");
+					return;
+				}
+
+				let osm = OSMExporter.toOSM(linestrings);
+				let url = window.URL.createObjectURL(new Blob([osm], {type: 'application/octet-stream'}));
+				let a = document.createElement('a');
+				a.href = url;
+				a.download = 'linestrings.osm';
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+				window.URL.revokeObjectURL(url);
+			}
+		));
+
 		// CLIPPED MAP
 		$('#map_tools').append(this.createToolIcon(
 			Potree.resourcePath + '/icons/clip_volume.svg',
@@ -426,42 +481,6 @@ export class Sidebar{
 			});
 		}
 
-		{
-			let elImport = elScene.next().find("#scene_export");
-			let osmIcon = `${Potree.resourcePath}/icons/linestring.svg`;
-
-			elImport.after(`
-				<div id="scene_import" style="padding: 6px 0;">
-					Import: <br>
-					<input type="file" id="osm_import_file" accept=".osm,.xml" style="display: none" />
-					<img id="osm_import_button" src="${osmIcon}" class="button-icon" style="height: 24px; cursor: pointer;" title="Import OSM" />
-				</div>
-			`);
-
-			let elImportButton = elScene.next().find("#osm_import_button");
-			let elImportFile = elScene.next().find("#osm_import_file");
-
-			elImportButton.click(() => {
-				elImportFile.click();
-			});
-
-			elImportFile.on('change', (event) => {
-				let file = event.target.files[0];
-				if (!file) return;
-
-				OSMImporter.loadFromFile(this.viewer, file).then((result) => {
-					this.viewer.postMessage(`Loading ${result.wayCount} linestrings from ${file.name}...`);
-					result.promise.then(() => {
-						this.viewer.postMessage(`Imported ${result.wayCount} linestrings from ${file.name}`);
-					});
-				}).catch((err) => {
-					this.viewer.postError(`Failed to import OSM: ${err.message}`);
-				});
-
-				// reset so the same file can be re-imported
-				elImportFile.val('');
-			});
-		}
 
 		let propertiesPanel = new PropertiesPanel(elProperties, this.viewer);
 		propertiesPanel.setScene(this.viewer.scene);
