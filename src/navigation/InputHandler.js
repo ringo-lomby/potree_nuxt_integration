@@ -286,7 +286,7 @@ export class InputHandler extends EventDispatcher {
 					el.object._listeners['drag'].length > 0));
 
 			if (target) {
-				this.startDragging(target.object, {location: target.point});
+				this.startDragging(target.object, {location: target.point, instanceId: target.instanceId});
 			} else {
 				this.startDragging(null);
 			}
@@ -353,13 +353,14 @@ export class InputHandler extends EventDispatcher {
 			}
 
 			// check for a click
-			let clicked = this.hoveredElements.map(h => h.object).find(v => v === this.drag.object) !== undefined;
-			if(clicked){
+			let clickedEl = this.hoveredElements.find(h => h.object === this.drag.object);
+			if(clickedEl){
 				if (this.logMessages) console.log(`${this.constructor.name}: click ${this.drag.object.name}`);
 				this.drag.object.dispatchEvent({
 					type: 'click',
 					viewer: this.viewer,
 					consume: consume,
+					instanceId: clickedEl.instanceId,
 				});
 			}
 
@@ -440,8 +441,10 @@ export class InputHandler extends EventDispatcher {
 				}
 			}
 		}else{
-			let curr = hoveredElements.map(a => a.object).find(a => true);
-			let prev = this.hoveredElements.map(a => a.object).find(a => true);
+			let currEl = hoveredElements[0];
+			let prevEl = this.hoveredElements[0];
+			let curr = currEl ? currEl.object : undefined;
+			let prev = prevEl ? prevEl.object : undefined;
 
 			if(curr !== prev){
 				if(curr){
@@ -449,6 +452,7 @@ export class InputHandler extends EventDispatcher {
 					curr.dispatchEvent({
 						type: 'mouseover',
 						object: curr,
+						instanceId: currEl.instanceId,
 					});
 				}
 				if(prev){
@@ -456,6 +460,7 @@ export class InputHandler extends EventDispatcher {
 					prev.dispatchEvent({
 						type: 'mouseleave',
 						object: prev,
+						instanceId: prevEl.instanceId,
 					});
 				}
 			}

@@ -188,15 +188,14 @@ export class DrawLineStringTool extends EventDispatcher {
 			let hitDist = Infinity;
 
 			for (let ls of this.viewer.scene.drawLineStrings) {
-				for (let i = 0; i < ls.spheres.length; i++) {
-					let sphere = ls.spheres[i];
-					if (!sphere.visible) continue;
-					let hits = [];
-					sphere.raycast(raycaster, hits);
-					if (hits.length > 0 && hits[0].distance < hitDist) {
-						hitDist = hits[0].distance;
+				if (!ls._nodesMesh || !ls._nodesMesh.visible) continue;
+				let hits = [];
+				ls._nodesMesh.raycast(raycaster, hits);
+				for (let hit of hits) {
+					if (hit.distance < hitDist) {
+						hitDist = hit.distance;
 						hitLs   = ls;
-						hitIdx  = i;
+						hitIdx  = hit.instanceId;
 					}
 				}
 			}
@@ -424,16 +423,10 @@ export class DrawLineStringTool extends EventDispatcher {
 
 			ls.update();
 
-			for (let i = 0; i < ls.spheres.length; i++) {
-				let sphere = ls.spheres[i];
+			if (ls._nodesMesh) {
+				ls._nodesMesh.visible = showSpheres;
 				if (showSpheres) {
-					sphere.visible = true;
-					let distance = camPos.distanceTo(sphere.getWorldPosition(this._tempSpherePos));
-					let pr = Utils.projectedRadius(1, camera, distance, clientWidth, clientHeight);
-					let scale = (15 / pr);
-					sphere.scale.set(scale, scale, scale);
-				} else {
-					sphere.visible = false;
+					ls.updateNodeTransforms(camPos, camera, clientWidth, clientHeight);
 				}
 			}
 
