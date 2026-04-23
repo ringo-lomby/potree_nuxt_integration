@@ -297,14 +297,22 @@ export class DrawLineStringTool extends EventDispatcher {
 	}
 
 	_snapshotPoints (ls) {
-		return ls.points.map(p => p.position.clone());
+		// Capture position AND all original OSM node metadata so undo/redo doesn't strip it
+		return ls.points.map(p => ({
+			position:     p.position.clone(),
+			_osmNodeId:   p._osmNodeId,
+			_osmNodeTags: p._osmNodeTags,
+			_osmLat:      p._osmLat,
+			_osmLon:      p._osmLon,
+		}));
 	}
 
 	_pushHistory (ls, before) {
 		let after = this._snapshotPoints(ls);
 
 		// Skip no-ops (e.g. delete attempted on a 2-point linestring)
-		if (after.length === before.length && after.every((p, i) => p.equals(before[i]))) return;
+		if (after.length === before.length &&
+			after.every((p, i) => p.position.equals(before[i].position))) return;
 
 		if (this._undoStack.length >= 50) this._undoStack.shift();
 		this._undoStack.push({ ls, before, after });
@@ -317,10 +325,15 @@ export class DrawLineStringTool extends EventDispatcher {
 			ls.removeMarker(ls.points.length - 1);
 		}
 		while (ls.points.length < snapshot.length) {
-			ls.addMarker(snapshot[ls.points.length].clone());
+			ls.addMarker(snapshot[ls.points.length].position.clone());
 		}
 		for (let i = 0; i < snapshot.length; i++) {
-			ls.setPosition(i, snapshot[i].clone());
+			ls.setPosition(i, snapshot[i].position.clone());
+			// Restore all original OSM node metadata after position is applied
+			ls.points[i]._osmNodeId   = snapshot[i]._osmNodeId;
+			ls.points[i]._osmNodeTags = snapshot[i]._osmNodeTags;
+			ls.points[i]._osmLat      = snapshot[i]._osmLat;
+			ls.points[i]._osmLon      = snapshot[i]._osmLon;
 		}
 		ls.selectNode(-1);
 	}

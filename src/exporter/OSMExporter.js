@@ -9,58 +9,100 @@ export class OSMExporter {
 			items = [items];
 		}
 
-		// collect linestrings from DrawLineString and unclosed Measure objects
-		let linestrings = [];
+		// ── File-level metadata ───────────────────────────────────────────────
+		// Use the first linestring that carries import metadata (same for the
+		// whole file since fileMeta is shared across the import batch).
+		let fileMeta = null;
+		for (let item of items) {
+			if (item instanceof DrawLineString &&
+				item._osmMeta && item._osmMeta.fileMeta) {
+				fileMeta = item._osmMeta.fileMeta;
+				break;
+			}
+		}
+		let generator = fileMeta ? fileMeta.generator : 'Potree';
+
+		// ── Collect nodes and ways ────────────────────────────────────────────
+		let newNodeId = -1;
+		let newWayId  = -1;
+		let allNodes  = [];
+		let allWays   = [];
+
 		for (let item of items) {
 			if (item instanceof DrawLineString && item.points.length >= 2) {
-				linestrings.push({
-					name: item.name,
-					points: item.points.map(p => p.position)
-				});
-			} else if (item instanceof Measure && !item.closed && item.points.length >= 2) {
-				linestrings.push({
-					name: item.name,
-					points: item.points.map(p => p.position)
+				let wayNodeIds = [];
+
+				for (let point of item.points) {
+					let pos = point.position;
+
+					// Original node → keep its ID and lat/lon.
+					// New node (added in Potree) → mint a fresh negative ID.
+					let nid = (point._osmNodeId != null) ? point._osmNodeId : newNodeId--;
+					let lat = (point._osmLat    != null) ? point._osmLat    : '0';
+					let lon = (point._osmLon    != null) ? point._osmLon    : '0';
+
+					wayNodeIds.push(nid);
+					allNodes.push({
+						id:            nid,
+						lat,
+						lon,
+						x:             pos.x,
+						y:             pos.y,
+						z:             pos.z,
+						preservedTags: point._osmNodeTags || {},
+					});
+				}
+
+				// Original way → reuse its ID and write back ALL original tags
+				// exactly as they were. No tags are added or removed.
+				let wayId   = (item._osmMeta != null) ? item._osmMeta.wayId   : newWayId--;
+				let wayTags = (item._osmMeta != null) ? item._osmMeta.wayTags : {};
+
+				allWays.push({ id: wayId, nodeIds: wayNodeIds, tags: wayTags });
+
+			} else if (item instanceof Measure &&
+				!item.closed && item.points.length >= 2) {
+
+				let wayNodeIds = [];
+				for (let point of item.points) {
+					let nid = newNodeId--;
+					wayNodeIds.push(nid);
+					allNodes.push({
+						id: nid, lat: '0', lon: '0',
+						x: point.position.x,
+						y: point.position.y,
+						z: point.position.z,
+						preservedTags: {},
+					});
+				}
+				allWays.push({
+					id: newWayId--,
+					nodeIds: wayNodeIds,
+					tags: { name: item.name },
 				});
 			}
 		}
 
-		let nodeId = -1;
-		let wayId = -1;
-		let allNodes = [];
-		let allWays = [];
-
-		for (let ls of linestrings) {
-			let wayNodeIds = [];
-
-			for (let point of ls.points) {
-				let nid = nodeId--;
-				wayNodeIds.push(nid);
-
-				allNodes.push({
-					id: nid,
-					x: point.x,
-					y: point.y,
-					z: point.z
-				});
-			}
-
-			allWays.push({
-				id: wayId--,
-				name: ls.name,
-				nodeIds: wayNodeIds
-			});
-		}
-
+		// ── Serialise ─────────────────────────────────────────────────────────
 		let lines = [];
 		lines.push('<?xml version="1.0" encoding="UTF-8"?>');
-		lines.push('<osm generator="Potree">');
+		lines.push(`<osm generator="${generator}">`);
+
+		// Write back any top-level custom elements (e.g. <MetaInfo .../>)
+		if (fileMeta && fileMeta.topLevelElements) {
+			lines.push('  ' + fileMeta.topLevelElements);
+		}
 
 		for (let node of allNodes) {
-			lines.push(`  <node id="${node.id}" lat="0" lon="0">`);
+			lines.push(`  <node id="${node.id}" lat="${node.lat}" lon="${node.lon}">`);
+			// Update the three position tags with the current Potree values
 			lines.push(`    <tag k="local_x" v="${node.x.toFixed(4)}"/>`);
 			lines.push(`    <tag k="local_y" v="${node.y.toFixed(4)}"/>`);
-			lines.push(`    <tag k="ele" v="${node.z.toFixed(4)}"/>`);
+			lines.push(`    <tag k="ele"     v="${node.z.toFixed(4)}"/>`);
+			// All other original node tags, untouched
+			for (let k in node.preservedTags) {
+				lines.push(`    <tag k="${k}" v="${node.preservedTags[k]}"/>`);
+			}
 			lines.push(`  </node>`);
 		}
 
@@ -69,7 +111,10 @@ export class OSMExporter {
 			for (let nid of way.nodeIds) {
 				lines.push(`    <nd ref="${nid}"/>`);
 			}
-			lines.push(`    <tag k="name" v="${way.name}"/>`);
+			// Write ALL original way tags verbatim — nothing added, nothing removed
+			for (let k in way.tags) {
+				lines.push(`    <tag k="${k}" v="${way.tags[k]}"/>`);
+			}
 			lines.push(`  </way>`);
 		}
 
