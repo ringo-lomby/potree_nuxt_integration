@@ -44,8 +44,8 @@ export class DrawLineString extends THREE.Object3D {
 	createSphereMaterial () {
 		return new THREE.MeshLambertMaterial({
 			color: this.color,
-			depthTest: false,
-			depthWrite: false
+			depthTest: true,
+			depthWrite: true,
 		});
 	}
 
