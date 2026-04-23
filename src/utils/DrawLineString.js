@@ -27,6 +27,7 @@ export class DrawLineString extends THREE.Object3D {
 
 		this.boundingBox = new THREE.Box3();
 		this._boundingBoxDirty = true;
+		this._geometryDirty = true;
 	}
 
 	getBoundingBox () {
@@ -273,6 +274,7 @@ export class DrawLineString extends THREE.Object3D {
 			this.selectedNodeIndex++;
 		}
 
+		this._geometryDirty = true;
 		this.update();
 
 		this.dispatchEvent({
@@ -285,6 +287,7 @@ export class DrawLineString extends THREE.Object3D {
 	removeMarker (index) {
 		this.points.splice(index, 1);
 		this._boundingBoxDirty = true;
+		this._geometryDirty = true;
 
 		this.remove(this.spheres[index]);
 
@@ -312,6 +315,7 @@ export class DrawLineString extends THREE.Object3D {
 
 	setMarker (index, point) {
 		this.points[index] = point;
+		this._geometryDirty = true;
 
 		this.dispatchEvent({
 			type: 'marker_moved',
@@ -327,6 +331,7 @@ export class DrawLineString extends THREE.Object3D {
 		let point = this.points[index];
 		point.position.copy(position);
 		this._boundingBoxDirty = true;
+		this._geometryDirty = true;
 
 		this.dispatchEvent({
 			type: 'marker_moved',
@@ -354,7 +359,8 @@ export class DrawLineString extends THREE.Object3D {
 	}
 
 	update () {
-		if (this.points.length === 0) return;
+		if (!this._geometryDirty || this.points.length === 0) return;
+		this._geometryDirty = false;
 
 		if (this.points.length === 1) {
 			this.spheres[0].position.copy(this.points[0].position);

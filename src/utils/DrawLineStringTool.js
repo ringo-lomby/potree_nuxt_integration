@@ -28,6 +28,19 @@ export class DrawLineStringTool extends EventDispatcher {
 		this.light = new THREE.PointLight(0xffffff, 1.0);
 		this.scene.add(this.light);
 
+		// Pre-allocated objects — reused every frame to avoid GC pressure
+		this._frustum = new THREE.Frustum();
+		this._projScreenMatrix = new THREE.Matrix4();
+		this._renderAreaSize = new THREE.Vector2();
+		this._tempCenter = new THREE.Vector3();
+		this._tempSpherePos = new THREE.Vector3();
+		this._nmouse = new THREE.Vector2();
+		this._raycaster = new THREE.Raycaster();
+		this._fallbackPlane = new THREE.Plane();
+		this._fallbackHit = new THREE.Vector3();
+		this._lastClientWidth = 0;
+		this._lastClientHeight = 0;
+
 		this.viewer.inputHandler.registerInteractiveScene(this.scene);
 
 		this.onRemove = (e) => {
@@ -331,13 +344,22 @@ export class DrawLineStringTool extends EventDispatcher {
 		let camera = this.viewer.scene.getActiveCamera();
 		let linestrings = this.viewer.scene.drawLineStrings;
 
+		const renderAreaSize = this.renderer.getSize(this._renderAreaSize);
+		let clientWidth = renderAreaSize.width;
+		let clientHeight = renderAreaSize.height;
+
+		let resolutionChanged = (clientWidth !== this._lastClientWidth || clientHeight !== this._lastClientHeight);
+		if (resolutionChanged) {
+			this._lastClientWidth = clientWidth;
+			this._lastClientHeight = clientHeight;
+		}
+
 		// JOSM-style cursor: snap to point cloud when available, else fall back to a
 		// horizontal plane at the elevation of the last committed node.
 		if (this._insertingLinestring) {
 			let ls = this._insertingLinestring;
 			let ghostIdx = ls.ghostIndex;
 			if (ghostIdx >= 0) {
-				const renderAreaSize = this.renderer.getSize(new THREE.Vector2());
 				let mouse = this.viewer.inputHandler.mouse;
 
 				let I = Utils.getMousePointCloudIntersection(
@@ -354,33 +376,26 @@ export class DrawLineStringTool extends EventDispatcher {
 						? ls.points[ghostIdx - 1].position.z
 						: (ls.points[ghostIdx].position.z || 0);
 
-					let nmouse = new THREE.Vector2(
-						(mouse.x / renderAreaSize.width)  *  2 - 1,
-						-(mouse.y / renderAreaSize.height) *  2 + 1);
-					let raycaster = new THREE.Raycaster();
-					raycaster.setFromCamera(nmouse, camera);
+					this._nmouse.set(
+						(mouse.x / clientWidth)  *  2 - 1,
+						-(mouse.y / clientHeight) *  2 + 1);
+					this._raycaster.setFromCamera(this._nmouse, camera);
 
 					// Plane: z = refZ  →  normal=(0,0,1), constant=-refZ
-					let plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -refZ);
-					let hit = new THREE.Vector3();
-					if (raycaster.ray.intersectPlane(plane, hit)) {
-						ls.setPosition(ghostIdx, hit);
+					this._fallbackPlane.normal.set(0, 0, 1);
+					this._fallbackPlane.constant = -refZ;
+					if (this._raycaster.ray.intersectPlane(this._fallbackPlane, this._fallbackHit)) {
+						ls.setPosition(ghostIdx, this._fallbackHit);
 					}
 				}
 			}
 		}
 
-		const renderAreaSize = this.renderer.getSize(new THREE.Vector2());
-		let clientWidth = renderAreaSize.width;
-		let clientHeight = renderAreaSize.height;
-
 		this.light.position.copy(camera.position);
 
 		// Frustum culling — only update linestrings visible to the camera
-		let frustum = new THREE.Frustum();
-		let projScreenMatrix = new THREE.Matrix4();
-		projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-		frustum.setFromProjectionMatrix(projScreenMatrix);
+		this._projScreenMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+		this._frustum.setFromProjectionMatrix(this._projScreenMatrix);
 
 		let camPos = camera.position;
 		// Distance threshold: hide spheres beyond this distance from camera
@@ -395,7 +410,7 @@ export class DrawLineStringTool extends EventDispatcher {
 			}
 
 			// Frustum cull — skip if entirely outside the view
-			if (!frustum.intersectsBox(bbox)) {
+			if (!this._frustum.intersectsBox(bbox)) {
 				ls.visible = false;
 				continue;
 			}
@@ -403,7 +418,7 @@ export class DrawLineStringTool extends EventDispatcher {
 			ls.visible = true;
 
 			// Distance LOD — only show spheres if close enough
-			let center = bbox.getCenter(new THREE.Vector3());
+			let center = bbox.getCenter(this._tempCenter);
 			let dist = camPos.distanceTo(center);
 			let showSpheres = (dist < maxSphereDistance);
 
@@ -413,7 +428,7 @@ export class DrawLineStringTool extends EventDispatcher {
 				let sphere = ls.spheres[i];
 				if (showSpheres) {
 					sphere.visible = true;
-					let distance = camPos.distanceTo(sphere.getWorldPosition(new THREE.Vector3()));
+					let distance = camPos.distanceTo(sphere.getWorldPosition(this._tempSpherePos));
 					let pr = Utils.projectedRadius(1, camera, distance, clientWidth, clientHeight);
 					let scale = (15 / pr);
 					sphere.scale.set(scale, scale, scale);
@@ -422,12 +437,14 @@ export class DrawLineStringTool extends EventDispatcher {
 				}
 			}
 
-			// Update edge material resolution
-			for (let edge of ls.edges) {
-				edge.material.resolution.set(clientWidth, clientHeight);
-			}
-			for (let edge of ls.outlineEdges) {
-				edge.material.resolution.set(clientWidth, clientHeight);
+			// Only update edge material resolution when the viewport size changes
+			if (resolutionChanged) {
+				for (let edge of ls.edges) {
+					edge.material.resolution.set(clientWidth, clientHeight);
+				}
+				for (let edge of ls.outlineEdges) {
+					edge.material.resolution.set(clientWidth, clientHeight);
+				}
 			}
 		}
 	}
