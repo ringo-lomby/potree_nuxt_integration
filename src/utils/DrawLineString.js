@@ -282,14 +282,16 @@ export class DrawLineString extends THREE.Object3D {
 		this.setMarker(this.points.length - 1, point);
 	}
 
-	insertMarkerAfter (index) {
+	insertMarkerAfter (index, position) {
 		if (index < 0 || index >= this.points.length - 1) return;
 
 		let p0 = this.points[index].position;
 		let p1 = this.points[index + 1].position;
-		let midpoint = p0.clone().add(p1).multiplyScalar(0.5);
+		let insertPos = (position != null)
+			? position.clone()
+			: p0.clone().add(p1).multiplyScalar(0.5);
 
-		let point = {position: midpoint};
+		let point = {position: insertPos};
 		this.points.splice(index + 1, 0, point);
 
 		this._ensureNodeCapacity(this.points.length);
@@ -300,7 +302,7 @@ export class DrawLineString extends THREE.Object3D {
 			this._nodesMesh.setMatrixAt(i, this._nodeMatrix);
 		}
 		this._nodeMatrix.identity();
-		this._nodeMatrix.setPosition(midpoint);
+		this._nodeMatrix.setPosition(insertPos);
 		this._nodesMesh.setMatrixAt(index + 1, this._nodeMatrix);
 		this._nodesMesh.count = this.points.length;
 		this._nodesMesh.instanceMatrix.needsUpdate = true;
