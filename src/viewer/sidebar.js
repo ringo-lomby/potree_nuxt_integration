@@ -7,6 +7,8 @@ import {OSMImporter} from "../importer/OSMImporter.js"
 import {Volume, BoxVolume, SphereVolume} from "../utils/Volume.js"
 import {PolygonClipVolume} from "../utils/PolygonClipVolume.js"
 import {PropertiesPanel} from "./PropertyPanels/PropertiesPanel.js"
+import {DrawLineStringPanel} from "./PropertyPanels/DrawLineStringPanel.js"
+import {DrawLineString} from "../utils/DrawLineString.js"
 import {PointCloudTree} from "../PointCloudTree.js"
 import {Profile} from "../utils/Profile.js"
 import {Measure} from "../utils/Measure.js"
@@ -541,6 +543,34 @@ export class Sidebar{
 		let tree = $(`<div id="jstree_scene"></div>`);
 		elObjects.append(tree);
 
+		// ── Inline LineString properties panel (Tools > Map section) ─────────
+		let elInlinePanel = $('#linestring_inline_panel');
+		let _inlinePanelContext = null;
+		let _inlinePanelInstance = null;
+
+		const showInlinePanel = (ls) => {
+			if (_inlinePanelContext) {
+				for (let task of _inlinePanelContext.cleanupTasks) task();
+				_inlinePanelContext = null;
+				_inlinePanelInstance = null;
+			}
+			elInlinePanel.empty();
+			if (!ls) { elInlinePanel.hide(); return; }
+
+			_inlinePanelContext = {
+				cleanupTasks: [],
+				addVolatileListener(target, type, callback) {
+					target.addEventListener(type, callback);
+					this.cleanupTasks.push(() => target.removeEventListener(type, callback));
+				},
+			};
+			_inlinePanelInstance = new DrawLineStringPanel(this.viewer, ls, _inlinePanelContext);
+			elInlinePanel.append(_inlinePanelInstance.elContent);
+			elInlinePanel.show();
+			$('#menu_tools').next().slideDown();
+		};
+		// ─────────────────────────────────────────────────────────────────────
+
 		tree.jstree({
 			'plugins': ["checkbox", "state"],
 			'core': {
@@ -598,6 +628,10 @@ export class Sidebar{
 			let object = data.node.data;
 			propertiesPanel.set(object);
 
+			if (object instanceof DrawLineString) {
+				showInlinePanel(object);
+			}
+
 			this.viewer.inputHandler.deselectAll();
 
 			if(object instanceof Volume){
@@ -609,6 +643,7 @@ export class Sidebar{
 
 		tree.on("deselect_node.jstree", (e, data) => {
 			propertiesPanel.set(null);
+			showInlinePanel(null);
 			// Clear whole-linestring highlight when deselected from the tree
 			for (let ls of this.viewer.scene.drawLineStrings) {
 				if (ls._selected) {
@@ -932,16 +967,26 @@ export class Sidebar{
 
 		this.viewer.addEventListener('linestring_selected_in_3d', (e) => {
 			let ls = e.linestring;
+			showInlinePanel(ls);
 			if (ls) {
 				let vectorsRoot = $("#jstree_scene").jstree().get_json("vectors");
 				if (!vectorsRoot || !vectorsRoot.children) return;
 				let jsonNode = vectorsRoot.children.find(child => child.data && child.data.uuid === ls.uuid);
 				if (jsonNode) {
 					tree.jstree('deselect_all', true);
-					tree.jstree('select_node', jsonNode.id);
+					// suppress=true so select_node.jstree doesn't double-call showInlinePanel
+					tree.jstree('select_node', jsonNode.id, true);
+					propertiesPanel.set(ls);
 				}
 			} else {
 				tree.jstree('deselect_all');
+			}
+		});
+
+		// Hide inline panel when linestring is removed
+		this.viewer.scene.addEventListener("draw_linestring_removed", (e) => {
+			if (_inlinePanelInstance && _inlinePanelInstance.measurement === e.linestring) {
+				showInlinePanel(null);
 			}
 		});
 
