@@ -355,8 +355,8 @@ export class Sidebar{
 
 					let properties = { name: ls.name };
 
-					if (ls._osmMeta && ls._osmMeta.wayTags) {
-						properties.tags = ls._osmMeta.wayTags;
+					if (ls._wayTags && Object.keys(ls._wayTags).length > 0) {
+						properties.tags = ls._wayTags;
 					}
 
 					let nodeTags = ls.points.map(pt => pt._osmNodeTags || {});
@@ -412,6 +412,296 @@ export class Sidebar{
 				$('#cliptask_options_show_inside').trigger('click');
 			}
 		));
+
+		// LINESTRING HELP
+		{
+			const _guideMarkdown = `# LineString Tool — User Guide
+
+---
+
+## 1. Starting a New LineString
+
+1. In the **Map Tools** sidebar, click the **LineString** icon (green line icon).
+2. A new LineString entry appears in the Scene panel on the left.
+3. Move your cursor over the 3D viewport — a **ghost node** follows your mouse, snapping to the point cloud surface.
+
+---
+
+## 2. Drawing Nodes
+
+| Action | Result |
+|---|---|
+| **Left click** | Commit the current cursor position as a permanent node |
+| **Double-click** | Finish drawing (removes the dangling ghost node) |
+| **Right click** | Finish drawing |
+| **Enter** | Finish drawing |
+| **Escape** | Finish drawing |
+| **Backspace** | Remove the last committed node (ghost stays active) |
+
+> A LineString must have at least **2 nodes** to be kept. If you finish with fewer, it is discarded automatically.
+
+---
+
+## 3. Selecting a LineString
+
+### Select the whole LineString
+
+| Action | Result |
+|---|---|
+| **Left click** on a line segment in the 3D view | Select that LineString (edges turn **red**) |
+| **Click a LineString row** in the Scene panel | Select that LineString |
+| **Escape** (no node selected) | Deselect the LineString |
+
+When a LineString is selected its edges change from green to **red**. The Properties panel opens automatically.
+
+### Select an individual node
+
+| Action | Result |
+|---|---|
+| **Ctrl + Left click** on a node sphere in the 3D view | Select that node (turns red) |
+| **Click a row** in the Properties panel node table | Select that node |
+| **Click the same row again** | Deselect |
+| **Escape** (node selected) | Deselect the current node |
+
+A selected node highlights **yellow** on its connected segments and **red** on the sphere.
+
+---
+
+## 4. Moving a Node
+
+| Action | Result |
+|---|---|
+| **Drag** a node sphere in the 3D view | Move it; snaps to point cloud surface |
+| **Arrow keys** (node selected) | Nudge the node in camera-relative X/Y |
+| **Shift + Arrow keys** | Nudge 10x faster |
+
+> Arrow key movement is proportional to camera distance — zoom in for finer control.
+
+Undo / Redo works for all move operations:
+
+| Action | Result |
+|---|---|
+| **Ctrl + Z** | Undo last change |
+| **Ctrl + Y** or **Ctrl + Shift + Z** | Redo |
+
+Up to **50** history steps are kept per session.
+
+---
+
+## 5. Adding Nodes to an Existing LineString
+
+### Insert on a segment (Shift + Click)
+
+1. Hold **Shift** and left-click on any **line segment** (within ~8 px on screen).
+2. A new node is inserted at the nearest point on that segment.
+
+### Insert via the Properties panel
+
+- Click the small **+** icon that appears **between two rows** in the node table.
+- A new node is placed at the midpoint of that segment.
+
+### Insert after a selected node (keyboard)
+
+1. Select a node (see §3).
+2. Press **Insert** — inserts a node immediately after the selected one (or appends at the end if the last node is selected).
+
+---
+
+## 6. Deleting a Node
+
+> Minimum 2 nodes must remain — delete is blocked if only 2 are left.
+
+| Action | Result |
+|---|---|
+| Select a node then press **Delete** | Deletes the selected node |
+| Click the **trash icon** on a row in the Properties panel | Deletes that node |
+
+---
+
+## 7. Way Tags (Cost Factor, Speed Limit, and Custom Tags)
+
+**Way tags** are key-value metadata that apply to the **entire LineString**. They appear at the top of the Properties panel whenever a LineString is selected.
+
+### Default way tags
+
+Every newly drawn LineString starts with two pre-filled way tags:
+
+| Key | Default value | Purpose |
+|---|---|---|
+| \`cost_factor\` | \`1.000000\` | Routing cost multiplier for this segment |
+| \`speed_limit\` | \`10\` | Speed limit in km/h for this segment |
+
+### Add / Edit / Delete a way tag
+
+1. Click **Add tag** at the bottom of the Way Tags section.
+2. Type the **key**, press **Enter** to jump to **value**, press **Enter** to save.
+3. Click the **x** icon to delete a tag.
+
+> Way tags from imported OSM files are loaded into this editor and are fully editable.
+
+---
+
+## 8. Adding and Editing Tags on a Node
+
+Tags are **custom key-value metadata** stored per node. Exported with the linestring in OSM and GeoJSON.
+
+1. **Select a node** (Ctrl + Click in 3D view, or click a row in the panel).
+2. The **Tags** section appears below the node table.
+3. Click **Add tag**, type key + value, press **Enter** to save.
+4. Click the **x** icon to delete a tag.
+
+> Tags are preserved through undo/redo and carried into export files.
+
+---
+
+## 9. Deleting a Whole LineString
+
+- In the Properties panel, click the **red remove icon** (bottom-right of the panel).
+- Or select the linestring in the Scene tree and press **Delete**.
+
+---
+
+## 10. Exporting LineStrings
+
+Both export buttons are in the **Map Tools** sidebar.
+
+- **Arrow down icon** — downloads \`linestrings.osm\`
+- **GeoJSON file icon** — downloads \`linestrings.geojson\`
+
+---
+
+## 11. Importing LineStrings
+
+Click the **arrow up icon** — opens a file picker.
+
+- Accepts \`.osm\` and \`.xml\` files.
+- All OSM node tags and way tags are preserved and editable after import.
+`;
+
+			const _esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+			const _inline = (text) => {
+				text = _esc(text);
+				text = text.replace(/`([^`]+)`/g, '<code style="background:#2a2a2a;padding:1px 4px;border-radius:3px;font-size:0.9em">$1</code>');
+				text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+				text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+				return text;
+			};
+
+			const _renderMd = (md) => {
+				const lines = md.split('\n');
+				let html = '';
+				let i = 0;
+				while (i < lines.length) {
+					const line = lines[i];
+
+					if (line.startsWith('```')) {
+						let code = '';
+						i++;
+						while (i < lines.length && !lines[i].startsWith('```')) { code += lines[i] + '\n'; i++; }
+						html += `<pre style="background:#1a1a1a;padding:10px;border-radius:4px;overflow-x:auto;font-size:12px;margin:8px 0"><code>${_esc(code.trimEnd())}</code></pre>`;
+						i++; continue;
+					}
+					if (/^-{3,}$/.test(line)) { html += '<hr style="border-color:#444;margin:12px 0">'; i++; continue; }
+					if (line.startsWith('### ')) { html += `<h3 style="color:#ddd;font-size:13px;margin:12px 0 4px">${_inline(line.slice(4))}</h3>`; i++; continue; }
+					if (line.startsWith('## '))  { html += `<h2 style="color:#fff;font-size:15px;margin:14px 0 6px;border-bottom:1px solid #444;padding-bottom:4px">${_inline(line.slice(3))}</h2>`; i++; continue; }
+					if (line.startsWith('# '))   { html += `<h1 style="color:#fff;font-size:18px;margin:0 0 10px">${_inline(line.slice(2))}</h1>`; i++; continue; }
+
+					if (line.startsWith('> ')) {
+						let bq = '';
+						while (i < lines.length && lines[i].startsWith('> ')) { bq += _inline(lines[i].slice(2)) + ' '; i++; }
+						html += `<blockquote style="border-left:3px solid #555;margin:8px 0;padding:4px 10px;color:#aaa;font-style:italic">${bq.trim()}</blockquote>`;
+						continue;
+					}
+
+					if (line.startsWith('|')) {
+						const rows = [];
+						while (i < lines.length && lines[i].startsWith('|')) { rows.push(lines[i]); i++; }
+						const parseCells = (r) => r.split('|').map(c => c.trim()).filter(c => c && !/^[-:]+$/.test(c));
+						const hCells = parseCells(rows[0]);
+						const tblStyle = 'width:100%;border-collapse:collapse;font-size:12px;margin:8px 0';
+						const thStyle = 'text-align:left;padding:5px 8px;background:#2a2a2a;color:#ccc;border:1px solid #444';
+						const tdStyle = 'padding:4px 8px;border:1px solid #333;color:#bbb;vertical-align:top';
+						let t = `<table style="${tblStyle}"><thead><tr>${hCells.map(c=>`<th style="${thStyle}">${_inline(c)}</th>`).join('')}</tr></thead><tbody>`;
+						for (let r = 0; r < rows.length; r++) {
+							if (r === 0 || /^\|[-|: ]+\|$/.test(rows[r])) continue;
+							const cells = parseCells(rows[r]);
+							t += `<tr>${cells.map(c=>`<td style="${tdStyle}">${_inline(c)}</td>`).join('')}</tr>`;
+						}
+						t += '</tbody></table>';
+						html += t; continue;
+					}
+
+					if (/^\d+\. /.test(line)) {
+						let items = '';
+						while (i < lines.length && /^\d+\. /.test(lines[i])) { items += `<li style="margin:3px 0">${_inline(lines[i].replace(/^\d+\. /,''))}</li>`; i++; }
+						html += `<ol style="padding-left:20px;margin:6px 0;color:#bbb;font-size:13px">${items}</ol>`;
+						continue;
+					}
+					if (line.startsWith('- ')) {
+						let items = '';
+						while (i < lines.length && lines[i].startsWith('- ')) { items += `<li style="margin:3px 0">${_inline(lines[i].slice(2))}</li>`; i++; }
+						html += `<ul style="padding-left:20px;margin:6px 0;color:#bbb;font-size:13px">${items}</ul>`;
+						continue;
+					}
+					if (line.trim() === '') { i++; continue; }
+
+					let para = '';
+					while (i < lines.length && lines[i].trim() !== '' &&
+						!lines[i].startsWith('#') && !lines[i].startsWith('|') &&
+						!lines[i].startsWith('- ') && !/^\d+\. /.test(lines[i]) &&
+						!lines[i].startsWith('> ') && !lines[i].startsWith('```') &&
+						!/^-{3,}$/.test(lines[i])) {
+						para += _inline(lines[i]) + ' '; i++;
+					}
+					if (para.trim()) html += `<p style="color:#bbb;font-size:13px;margin:6px 0;line-height:1.5">${para.trim()}</p>`;
+				}
+				return html;
+			};
+
+			const _showHelpDialog = () => {
+				if ($('#ls_help_overlay').length) return;
+
+				const overlay = $(`<div id="ls_help_overlay" style="
+					position:fixed;inset:0;z-index:9999;
+					background:rgba(0,0,0,0.75);
+					display:flex;align-items:center;justify-content:center;
+				"></div>`);
+
+				const dialog = $(`<div style="
+					background:#1e1e1e;border:1px solid #444;border-radius:6px;
+					width:min(700px,90vw);max-height:85vh;
+					display:flex;flex-direction:column;
+					box-shadow:0 8px 32px rgba(0,0,0,0.7);
+				"></div>`);
+
+				const header = $(`<div style="
+					display:flex;align-items:center;justify-content:space-between;
+					padding:12px 16px;border-bottom:1px solid #444;flex-shrink:0;
+				">
+					<span style="color:#fff;font-weight:bold;font-size:15px">LineString Tool — User Guide</span>
+					<span id="ls_help_close" style="color:#aaa;cursor:pointer;font-size:20px;line-height:1;padding:0 4px" title="Close">&times;</span>
+				</div>`);
+
+				const body = $(`<div style="
+					overflow-y:auto;padding:16px 20px;flex:1;
+				">${_renderMd(_guideMarkdown)}</div>`);
+
+				dialog.append(header).append(body);
+				overlay.append(dialog);
+				$('body').append(overlay);
+
+				overlay.on('click', (e) => { if (e.target === overlay[0]) overlay.remove(); });
+				header.find('#ls_help_close').on('click', () => overlay.remove());
+				$(document).on('keydown.ls_help', (e) => { if (e.key === 'Escape') { overlay.remove(); $(document).off('keydown.ls_help'); } });
+			};
+
+			$('#map_tools').append(this.createToolIcon(
+				Potree.resourcePath + '/icons/help.svg',
+				'[title]LineString Guide',
+				_showHelpDialog
+			));
+		}
 
 		// ANNOTATION
 		elToolbar.append(this.createToolIcon(
