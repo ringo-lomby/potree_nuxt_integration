@@ -23,8 +23,23 @@ export class OSMExporter {
 		let generator = fileMeta ? fileMeta.generator : 'Potree';
 
 		// ── Collect nodes and ways ────────────────────────────────────────────
-		let newNodeId = -1;
-		let newWayId  = -1;
+		// Find the highest existing positive ID so new IDs don't go negative.
+		let maxNodeId = 0;
+		let maxWayId  = 0;
+		for (let item of items) {
+			if (item instanceof DrawLineString) {
+				for (let point of item.points) {
+					if (point._osmNodeId != null && point._osmNodeId > maxNodeId) {
+						maxNodeId = point._osmNodeId;
+					}
+				}
+				if (item._osmMeta && item._osmMeta.wayId != null && item._osmMeta.wayId > maxWayId) {
+					maxWayId = item._osmMeta.wayId;
+				}
+			}
+		}
+		let newNodeId = maxNodeId + 1;
+		let newWayId  = maxWayId  + 1;
 		let allNodes  = [];
 		let allWays   = [];
 
@@ -37,7 +52,7 @@ export class OSMExporter {
 
 					// Original node → keep its ID and lat/lon.
 					// New node (added in Potree) → mint a fresh negative ID.
-					let nid = (point._osmNodeId != null) ? point._osmNodeId : newNodeId--;
+					let nid = (point._osmNodeId != null) ? point._osmNodeId : newNodeId++;
 					let lat = (point._osmLat    != null) ? point._osmLat    : '0';
 					let lon = (point._osmLon    != null) ? point._osmLon    : '0';
 
@@ -55,7 +70,7 @@ export class OSMExporter {
 
 				// Original way → reuse its ID and write back ALL original tags
 				// exactly as they were. No tags are added or removed.
-				let wayId   = (item._osmMeta != null) ? item._osmMeta.wayId : newWayId--;
+				let wayId   = (item._osmMeta != null) ? item._osmMeta.wayId : newWayId++;
 				let wayTags = item._wayTags || (item._osmMeta != null ? item._osmMeta.wayTags : {});
 
 				allWays.push({ id: wayId, nodeIds: wayNodeIds, tags: wayTags });
@@ -65,7 +80,7 @@ export class OSMExporter {
 
 				let wayNodeIds = [];
 				for (let point of item.points) {
-					let nid = newNodeId--;
+					let nid = newNodeId++;
 					wayNodeIds.push(nid);
 					allNodes.push({
 						id: nid, lat: '0', lon: '0',
@@ -76,7 +91,7 @@ export class OSMExporter {
 					});
 				}
 				allWays.push({
-					id: newWayId--,
+					id: newWayId++,
 					nodeIds: wayNodeIds,
 					tags: { name: item.name },
 				});
