@@ -11,7 +11,9 @@ export class DrawLineStringPanel extends MeasurePanel{
 		let removeIconPath = Potree.resourcePath + '/icons/remove.svg';
 		this.elContent = $(`
 			<div class="measurement_content selectable">
+				<span class="way_tags_container"></span>
 				<span class="nodes_table_container"></span>
+				<span class="node_tags_container"></span>
 				<br>
 				<table id="distances_table" class="measurement_value_table"></table>
 
@@ -36,9 +38,214 @@ export class DrawLineStringPanel extends MeasurePanel{
 		this.update();
 	}
 
+	_buildWayTagEditor(measurement) {
+		let removeIconPath = Potree.resourcePath + '/icons/remove.svg';
+		let addIconPath    = Potree.resourcePath + '/icons/add.svg';
+
+		if (!measurement._wayTags) measurement._wayTags = {};
+		let tags = measurement._wayTags;
+
+		let container = $(`<div style="margin-bottom: 12px; border-bottom: 1px solid #444; padding-bottom: 10px"></div>`);
+		container.append($(`<div style="font-size: 11px; color: #999; margin-bottom: 6px">Way Tags</div>`));
+
+		let table = $(`<table style="width: 100%; border-collapse: collapse"></table>`);
+		table.append($(`
+			<tr>
+				<th style="text-align:left; font-size:10px; padding:2px 4px; color:#666; font-weight:normal">Key</th>
+				<th style="text-align:left; font-size:10px; padding:2px 4px; color:#666; font-weight:normal">Value</th>
+				<th style="width:18px"></th>
+			</tr>
+		`));
+		container.append(table);
+
+		const inputStyle = [
+			'width:100%',
+			'box-sizing:border-box',
+			'background:#1a1a1a',
+			'color:#ddd',
+			'border:1px solid #444',
+			'padding:2px 5px',
+			'font-size:11px',
+			'font-family:inherit',
+		].join(';');
+
+		const addTagRow = (key, value) => {
+			let row = $(`<tr></tr>`);
+
+			let keyInput = $(`<input type="text" style="${inputStyle}"/>`);
+			keyInput.val(key);
+
+			let valInput = $(`<input type="text" style="${inputStyle}"/>`);
+			valInput.val(value);
+
+			let delBtn = $(`<img class="button-icon" src="${removeIconPath}" style="width:12px; height:12px; cursor:pointer; opacity:0.55; display:block"/>`);
+
+			let currentKey = key;
+
+			keyInput.on('blur', () => {
+				let newKey = keyInput.val().trim();
+				if (newKey === currentKey) return;
+				let val = (currentKey in tags) ? tags[currentKey] : valInput.val();
+				if (currentKey) delete tags[currentKey];
+				if (newKey) tags[newKey] = val;
+				currentKey = newKey;
+			});
+
+			valInput.on('input', () => {
+				if (currentKey) tags[currentKey] = valInput.val();
+			});
+
+			keyInput.on('keydown', (e) => { if (e.key === 'Enter') valInput.focus(); });
+			valInput.on('keydown', (e) => { if (e.key === 'Enter') valInput.blur(); });
+
+			delBtn.click(() => {
+				if (currentKey) delete tags[currentKey];
+				row.remove();
+			});
+
+			delBtn.hover(
+				() => delBtn.css('opacity', '1'),
+				() => delBtn.css('opacity', '0.55')
+			);
+
+			row.append($('<td style="padding:2px 2px; width:42%"></td>').append(keyInput));
+			row.append($('<td style="padding:2px 2px"></td>').append(valInput));
+			row.append($('<td style="padding:2px 2px; vertical-align:middle"></td>').append(delBtn));
+			table.append(row);
+
+			return row;
+		};
+
+		for (let [k, v] of Object.entries(tags)) {
+			addTagRow(k, String(v));
+		}
+
+		let addBtn = $(`<div style="margin-top:7px; cursor:pointer; font-size:11px; color:#777; display:inline-flex; align-items:center; gap:4px; user-select:none"></div>`);
+		addBtn.append($(`<img src="${addIconPath}" style="width:11px; height:11px"/>`));
+		addBtn.append($('<span>Add tag</span>'));
+		addBtn.hover(
+			() => addBtn.css('color', '#bbb'),
+			() => addBtn.css('color', '#777')
+		);
+		addBtn.click(() => {
+			let row = addTagRow('', '');
+			row.find('input').first().focus();
+		});
+		container.append(addBtn);
+
+		return container;
+	}
+
+	_buildTagEditor(point, nodeIndex) {
+		let removeIconPath = Potree.resourcePath + '/icons/remove.svg';
+		let addIconPath    = Potree.resourcePath + '/icons/add.svg';
+
+		if (!point._osmNodeTags) point._osmNodeTags = {};
+		let tags = point._osmNodeTags;
+
+		let container = $(`<div style="margin-top: 12px; border-top: 1px solid #444; padding-top: 10px"></div>`);
+
+		container.append($(`<div style="font-size: 11px; color: #999; margin-bottom: 6px">Tags — Node ${nodeIndex + 1}</div>`));
+
+		let table = $(`<table style="width: 100%; border-collapse: collapse"></table>`);
+		table.append($(`
+			<tr>
+				<th style="text-align:left; font-size:10px; padding:2px 4px; color:#666; font-weight:normal">Key</th>
+				<th style="text-align:left; font-size:10px; padding:2px 4px; color:#666; font-weight:normal">Value</th>
+				<th style="width:18px"></th>
+			</tr>
+		`));
+		container.append(table);
+
+		const inputStyle = [
+			'width:100%',
+			'box-sizing:border-box',
+			'background:#1a1a1a',
+			'color:#ddd',
+			'border:1px solid #444',
+			'padding:2px 5px',
+			'font-size:11px',
+			'font-family:inherit',
+		].join(';');
+
+		const addTagRow = (key, value) => {
+			let row = $(`<tr></tr>`);
+
+			let keyInput = $(`<input type="text" style="${inputStyle}"/>`);
+			keyInput.val(key);
+
+			let valInput = $(`<input type="text" style="${inputStyle}"/>`);
+			valInput.val(value);
+
+			let delBtn = $(`<img class="button-icon" src="${removeIconPath}" style="width:12px; height:12px; cursor:pointer; opacity:0.55; display:block"/>`);
+
+			let currentKey = key;
+
+			// on key blur: rename the tag key
+			keyInput.on('blur', () => {
+				let newKey = keyInput.val().trim();
+				if (newKey === currentKey) return;
+				let val = (currentKey in tags) ? tags[currentKey] : valInput.val();
+				if (currentKey) delete tags[currentKey];
+				if (newKey) tags[newKey] = val;
+				currentKey = newKey;
+			});
+
+			// on value change: save immediately
+			valInput.on('input', () => {
+				if (currentKey) tags[currentKey] = valInput.val();
+			});
+
+			// keyboard convenience
+			keyInput.on('keydown', (e) => { if (e.key === 'Enter') valInput.focus(); });
+			valInput.on('keydown', (e) => { if (e.key === 'Enter') valInput.blur(); });
+
+			delBtn.click(() => {
+				if (currentKey) delete tags[currentKey];
+				row.remove();
+			});
+
+			delBtn.hover(
+				() => delBtn.css('opacity', '1'),
+				() => delBtn.css('opacity', '0.55')
+			);
+
+			row.append($('<td style="padding:2px 2px; width:42%"></td>').append(keyInput));
+			row.append($('<td style="padding:2px 2px"></td>').append(valInput));
+			row.append($('<td style="padding:2px 2px; vertical-align:middle"></td>').append(delBtn));
+			table.append(row);
+
+			return row;
+		};
+
+		for (let [k, v] of Object.entries(tags)) {
+			addTagRow(k, String(v));
+		}
+
+		let addBtn = $(`<div style="margin-top:7px; cursor:pointer; font-size:11px; color:#777; display:inline-flex; align-items:center; gap:4px; user-select:none"></div>`);
+		addBtn.append($(`<img src="${addIconPath}" style="width:11px; height:11px"/>`));
+		addBtn.append($('<span>Add tag</span>'));
+		addBtn.hover(
+			() => addBtn.css('color', '#bbb'),
+			() => addBtn.css('color', '#777')
+		);
+		addBtn.click(() => {
+			let row = addTagRow('', '');
+			row.find('input').first().focus();
+		});
+		container.append(addBtn);
+
+		return container;
+	}
+
 	update(){
 		let removeIconPath = Potree.resourcePath + '/icons/remove.svg';
 		let addIconPath = Potree.resourcePath + '/icons/add.svg';
+
+		// way tags editor (always visible)
+		let elWayTagsContainer = this.elContent.find('.way_tags_container');
+		elWayTagsContainer.empty();
+		elWayTagsContainer.append(this._buildWayTagEditor(this.measurement));
 
 		// nodes table
 		let elNodesContainer = this.elContent.find('.nodes_table_container');
@@ -134,6 +341,15 @@ export class DrawLineStringPanel extends MeasurePanel{
 		}
 
 		elNodesContainer.append(table);
+
+		// tag editor — shown only when a node is selected
+		let elTagsContainer = this.elContent.find('.node_tags_container');
+		elTagsContainer.empty();
+
+		let si = this.measurement.selectedNodeIndex;
+		if (si >= 0 && si < this.measurement.points.length) {
+			elTagsContainer.append(this._buildTagEditor(this.measurement.points[si], si));
+		}
 
 		// distances table
 		let positions = this.measurement.points.map(p => p.position);

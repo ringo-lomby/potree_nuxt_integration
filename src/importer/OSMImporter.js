@@ -136,6 +136,7 @@ export class OSMImporter {
 						wayTags:  way.wayTags,   // ALL original tags, written verbatim
 						fileMeta: fileMeta,       // shared across the whole import batch
 					};
+					ls._wayTags = Object.assign({}, way.wayTags);
 
 					for (let j = 0; j < way.points.length; j++) {
 						ls.addMarker(way.points[j]);

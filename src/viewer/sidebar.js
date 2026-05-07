@@ -330,6 +330,57 @@ export class Sidebar{
 			}
 		));
 
+		// EXPORT LINESTRINGS (GeoJSON)
+		$('#map_tools').append(this.createToolIcon(
+			Potree.resourcePath + '/icons/file_geojson.svg',
+			'[title]Export LineStrings as GeoJSON',
+			() => {
+				let linestrings = this.viewer.scene.drawLineStrings;
+
+				if (linestrings.length === 0) {
+					this.viewer.postError("no linestrings to export");
+					return;
+				}
+
+				let features = linestrings.map(ls => {
+					let coordinates = ls.points.map(pt => {
+						let pos = pt.position;
+						if (pt._osmLat != null && pt._osmLon != null) {
+							return [parseFloat(pt._osmLon), parseFloat(pt._osmLat), pos.z];
+						}
+						return [pos.x, pos.y, pos.z];
+					});
+
+					let properties = { name: ls.name };
+
+					if (ls._osmMeta && ls._osmMeta.wayTags) {
+						properties.tags = ls._osmMeta.wayTags;
+					}
+
+					let nodeTags = ls.points.map(pt => pt._osmNodeTags || {});
+					if (nodeTags.some(t => Object.keys(t).length > 0)) {
+						properties.nodes = nodeTags.map(t => ({ tags: t }));
+					}
+
+					return {
+						type: 'Feature',
+						geometry: { type: 'LineString', coordinates },
+						properties,
+					};
+				});
+
+				let geojson = JSON.stringify({ type: 'FeatureCollection', features }, null, 2);
+				let url = window.URL.createObjectURL(new Blob([geojson], { type: 'application/json' }));
+				let a = document.createElement('a');
+				a.href = url;
+				a.download = 'linestrings.geojson';
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+				window.URL.revokeObjectURL(url);
+			}
+		));
+
 		// CLIPPED MAP
 		$('#map_tools').append(this.createToolIcon(
 			Potree.resourcePath + '/icons/clip_volume.svg',
@@ -558,6 +609,13 @@ export class Sidebar{
 
 		tree.on("deselect_node.jstree", (e, data) => {
 			propertiesPanel.set(null);
+			// Clear whole-linestring highlight when deselected from the tree
+			for (let ls of this.viewer.scene.drawLineStrings) {
+				if (ls._selected) {
+					ls._selected = false;
+					ls.applyHighlight();
+				}
+			}
 		});
 
 		tree.on("delete_node.jstree", (e, data) => {
@@ -871,6 +929,21 @@ export class Sidebar{
 		this.viewer.scene.addEventListener("polygon_clip_volume_removed", onPolygonClipVolumeRemoved);
 		this.viewer.scene.addEventListener("profile_removed", onProfileRemoved);
 		this.viewer.scene.addEventListener("draw_linestring_removed", onDrawLineStringRemoved);
+
+		this.viewer.addEventListener('linestring_selected_in_3d', (e) => {
+			let ls = e.linestring;
+			if (ls) {
+				let vectorsRoot = $("#jstree_scene").jstree().get_json("vectors");
+				if (!vectorsRoot || !vectorsRoot.children) return;
+				let jsonNode = vectorsRoot.children.find(child => child.data && child.data.uuid === ls.uuid);
+				if (jsonNode) {
+					tree.jstree('deselect_all', true);
+					tree.jstree('select_node', jsonNode.id);
+				}
+			} else {
+				tree.jstree('deselect_all');
+			}
+		});
 
 		{
 			let annotationIcon = `${Potree.resourcePath}/icons/annotation.svg`;

@@ -110,11 +110,22 @@ export class DrawLineStringTool extends EventDispatcher {
 					}
 				}
 			} else if (e.key === 'Escape') {
+				let deselectedNode = false;
 				for (let ls of this.viewer.scene.drawLineStrings) {
 					if (ls.selectedNodeIndex >= 0) {
 						ls.selectNode(-1);
+						deselectedNode = true;
 						break;
 					}
+				}
+				if (!deselectedNode) {
+					for (let ls of this.viewer.scene.drawLineStrings) {
+						if (ls._selected) {
+							ls._selected = false;
+							ls.applyHighlight();
+						}
+					}
+					this.viewer.dispatchEvent({ type: 'linestring_selected_in_3d', linestring: null });
 				}
 			} else if (e.key === 'Insert') {
 				for (let ls of this.viewer.scene.drawLineStrings) {
@@ -215,85 +226,110 @@ export class DrawLineStringTool extends EventDispatcher {
 			if (!e.shiftKey || e.button !== 0) return;
 			if (this._insertingLinestring) return;
 
-			let rect = this.viewer.renderer.domElement.getBoundingClientRect();
-			let x = e.clientX - rect.left;
-			let y = e.clientY - rect.top;
-			let renderAreaSize = this.renderer.getSize(new THREE.Vector2());
-			let camera = this.viewer.scene.getActiveCamera();
-
-			let nmouse = new THREE.Vector2(
-				 (x / renderAreaSize.width)  *  2 - 1,
-				-(y / renderAreaSize.height) *  2 + 1
-			);
-			let raycaster = new THREE.Raycaster();
-			raycaster.setFromCamera(nmouse, camera);
-			let rayDir = raycaster.ray.direction;
-			let rayOrigin = raycaster.ray.origin;
-
-			let hitLs       = null;
-			let hitSegIdx   = -1;
-			let hitPos      = null;
-			let hitScreenDist = Infinity;
-			let thresholdPx = 8;
-
-			// Reusable vectors for the inner loop
-			let d2n      = new THREE.Vector3();
-			let rVec     = new THREE.Vector3();
-			let segPoint = new THREE.Vector3();
-			let ndc      = new THREE.Vector3();
-
-			for (let ls of this.viewer.scene.drawLineStrings) {
-				if (!ls.visible) continue;
-
-				for (let i = 0; i < ls.points.length - 1; i++) {
-					let p0 = ls.points[i].position;
-					let p1 = ls.points[i + 1].position;
-
-					// Closest point on segment (p0→p1) to the camera ray
-					d2n.subVectors(p1, p0);
-					let segLen = d2n.length();
-					if (segLen < 1e-10) continue;
-					d2n.divideScalar(segLen);
-
-					rVec.subVectors(p0, rayOrigin);
-					let cosTheta = rayDir.dot(d2n);
-					let e1 = rayDir.dot(rVec);
-					let e2 = d2n.dot(rVec);
-					let denom = 1 - cosTheta * cosTheta;
-
-					let t = (Math.abs(denom) < 1e-10)
-						? e2
-						: (e1 * cosTheta - e2) / denom;
-					t = Math.max(0, Math.min(segLen, t));
-
-					segPoint.copy(p0).addScaledVector(d2n, t);
-
-					// Measure screen-space distance from hit point to mouse cursor
-					ndc.copy(segPoint).project(camera);
-					if (ndc.z > 1) continue; // clipped / behind camera
-
-					let sx = (ndc.x + 1) / 2 * renderAreaSize.width;
-					let sy = (1 - ndc.y) / 2 * renderAreaSize.height;
-					let dx = sx - x;
-					let dy = sy - y;
-					let screenDist = Math.sqrt(dx * dx + dy * dy);
-
-					if (screenDist < thresholdPx && screenDist < hitScreenDist) {
-						hitScreenDist = screenDist;
-						hitLs      = ls;
-						hitSegIdx  = i;
-						hitPos     = segPoint.clone();
-					}
-				}
-			}
-
-			if (hitLs) {
-				let before = this._snapshotPoints(hitLs);
-				hitLs.insertMarkerAfter(hitSegIdx, hitPos);
-				this._pushHistory(hitLs, before);
+			let hit = this._findLineSegmentHit(e.clientX, e.clientY, 8);
+			if (hit) {
+				let before = this._snapshotPoints(hit.ls);
+				hit.ls.insertMarkerAfter(hit.segIdx, hit.pos);
+				this._pushHistory(hit.ls, before);
 			}
 		};
 		this.viewer.renderer.domElement.addEventListener('click', this._onShiftClick);
+
+		// Plain left-click on a line segment → select the whole LineString
+		this._onPlainClick = (e) => {
+			if (e.ctrlKey || e.shiftKey || e.button !== 0) return;
+			if (this._insertingLinestring) return;
+
+			let hit = this._findLineSegmentHit(e.clientX, e.clientY, 12);
+
+			let changed = false;
+			for (let ls of this.viewer.scene.drawLineStrings) {
+				let next = (hit && hit.ls === ls);
+				if (ls._selected !== next) {
+					ls._selected = next;
+					ls.applyHighlight();
+					changed = true;
+				}
+			}
+
+			if (changed || hit) {
+				this.viewer.dispatchEvent({
+					type: 'linestring_selected_in_3d',
+					linestring: hit ? hit.ls : null,
+				});
+			}
+		};
+		this.viewer.renderer.domElement.addEventListener('click', this._onPlainClick);
+	}
+
+	_findLineSegmentHit (clientX, clientY, thresholdPx) {
+		let rect = this.viewer.renderer.domElement.getBoundingClientRect();
+		let x = clientX - rect.left;
+		let y = clientY - rect.top;
+		let renderAreaSize = this.renderer.getSize(new THREE.Vector2());
+		let camera = this.viewer.scene.getActiveCamera();
+
+		let nmouse = new THREE.Vector2(
+			 (x / renderAreaSize.width)  *  2 - 1,
+			-(y / renderAreaSize.height) *  2 + 1
+		);
+		let raycaster = new THREE.Raycaster();
+		raycaster.setFromCamera(nmouse, camera);
+		let rayDir = raycaster.ray.direction;
+		let rayOrigin = raycaster.ray.origin;
+
+		let hitLs         = null;
+		let hitSegIdx     = -1;
+		let hitPos        = null;
+		let hitScreenDist = Infinity;
+
+		let d2n      = new THREE.Vector3();
+		let rVec     = new THREE.Vector3();
+		let segPoint = new THREE.Vector3();
+		let ndc      = new THREE.Vector3();
+
+		for (let ls of this.viewer.scene.drawLineStrings) {
+			if (!ls.visible) continue;
+
+			for (let i = 0; i < ls.points.length - 1; i++) {
+				let p0 = ls.points[i].position;
+				let p1 = ls.points[i + 1].position;
+
+				d2n.subVectors(p1, p0);
+				let segLen = d2n.length();
+				if (segLen < 1e-10) continue;
+				d2n.divideScalar(segLen);
+
+				rVec.subVectors(p0, rayOrigin);
+				let cosTheta = rayDir.dot(d2n);
+				let e1 = rayDir.dot(rVec);
+				let e2 = d2n.dot(rVec);
+				let denom = 1 - cosTheta * cosTheta;
+
+				let t = (Math.abs(denom) < 1e-10)
+					? e2
+					: (e1 * cosTheta - e2) / denom;
+				t = Math.max(0, Math.min(segLen, t));
+
+				segPoint.copy(p0).addScaledVector(d2n, t);
+
+				ndc.copy(segPoint).project(camera);
+				if (ndc.z > 1) continue;
+
+				let sx = (ndc.x + 1) / 2 * renderAreaSize.width;
+				let sy = (1 - ndc.y) / 2 * renderAreaSize.height;
+				let screenDist = Math.sqrt((sx - x) ** 2 + (sy - y) ** 2);
+
+				if (screenDist < thresholdPx && screenDist < hitScreenDist) {
+					hitScreenDist = screenDist;
+					hitLs         = ls;
+					hitSegIdx     = i;
+					hitPos        = segPoint.clone();
+				}
+			}
+		}
+
+		return hitLs ? { ls: hitLs, segIdx: hitSegIdx, pos: hitPos } : null;
 	}
 
 	_snapshotPoints (ls) {
@@ -354,6 +390,7 @@ export class DrawLineStringTool extends EventDispatcher {
 		let linestring = new DrawLineString();
 		linestring.color = new THREE.Color(args.color || 0x00ff00);
 		linestring.name = args.name || 'LineString';
+		linestring._wayTags = { cost_factor: '1.000000', speed_limit: '10' };
 
 		this.dispatchEvent({
 			type: 'start_inserting_linestring',

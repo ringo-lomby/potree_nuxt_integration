@@ -17,6 +17,7 @@ export class DrawLineString extends THREE.Object3D {
 		this.color = new THREE.Color(0x00ff00);
 		this.selectedNodeIndex = -1;
 		this._hoveredNodeIndex = -1;
+		this._selected = false;
 
 		this.edges = [];
 		this.outlineEdges = [];
@@ -229,11 +230,12 @@ export class DrawLineString extends THREE.Object3D {
 			this._nodesMesh.instanceColor.needsUpdate = true;
 		}
 
+		let baseEdgeColor = this._selected ? new THREE.Color(0xff0000) : this.color;
 		for (let edge of this.edges) {
-			edge.material.color.copy(this.color);
+			edge.material.color.copy(baseEdgeColor);
 		}
 		for (let outline of this.outlineEdges) {
-			outline.material.color.set(0x111111);
+			outline.material.color.set(this._selected ? 0x440000 : 0x111111);
 		}
 
 		if (this.ghostIndex > 0 && this.edges[this.ghostIndex - 1]) {

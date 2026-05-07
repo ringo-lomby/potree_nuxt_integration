@@ -55,8 +55,8 @@ export class OSMExporter {
 
 				// Original way → reuse its ID and write back ALL original tags
 				// exactly as they were. No tags are added or removed.
-				let wayId   = (item._osmMeta != null) ? item._osmMeta.wayId   : newWayId--;
-				let wayTags = (item._osmMeta != null) ? item._osmMeta.wayTags : {};
+				let wayId   = (item._osmMeta != null) ? item._osmMeta.wayId : newWayId--;
+				let wayTags = item._wayTags || (item._osmMeta != null ? item._osmMeta.wayTags : {});
 
 				allWays.push({ id: wayId, nodeIds: wayNodeIds, tags: wayTags });
 
