@@ -22,6 +22,7 @@ import {OrientedImage} from "../modules/OrientedImages/OrientedImages.js";
 import {Images360} from "../modules/Images360/Images360.js";
 
 import JSON5 from "../../libs/json5-2.1.3/json5.mjs";
+import {showConfirmDialog} from "../utils/ConfirmDialog.js";
 
 export class Sidebar{
 
@@ -282,29 +283,38 @@ export class Sidebar{
 			let elImportFile = $('<input type="file" accept=".osm,.xml" style="display:none"/>');
 			$('body').append(elImportFile);
 
-			$('#map_tools').append(this.createToolIcon(
+			let elImportBtn = this.createToolIcon(
 				Potree.resourcePath + '/icons/arrow_up.svg',
 				'[title]Import LineStrings (OSM)',
 				() => {
 					$('#menu_scene').next().slideDown();
 					elImportFile.click();
 				}
-			));
+			);
+			$('#map_tools').append(elImportBtn);
 
-			elImportFile.on('change', (event) => {
+			elImportFile.on('change', async (event) => {
 				let file = event.target.files[0];
 				if (!file) return;
 
-				OSMImporter.loadFromFile(this.viewer, file).then((result) => {
-					this.viewer.postMessage(`Loading ${result.wayCount} linestrings from ${file.name}...`);
-					result.promise.then(() => {
-						this.viewer.postMessage(`Imported ${result.wayCount} linestrings from ${file.name}`);
-					});
-				}).catch((err) => {
-					this.viewer.postError(`Failed to import OSM: ${err.message}`);
-				});
+				elImportBtn.css({ opacity: '0.4', 'pointer-events': 'none' });
+				let loadingMsg = this.viewer.postMessage(`Importing linestrings from ${file.name}…`);
 
-				elImportFile.val('');
+				try {
+					let result = await OSMImporter.loadFromFile(this.viewer, file, {
+						onProgress: (done, total) => {
+							loadingMsg.setMessage(`Importing linestrings: ${done} / ${total}`);
+						}
+					});
+					loadingMsg.setMessage(`Imported ${result.wayCount} linestrings from ${file.name}`);
+					setTimeout(() => loadingMsg.element.slideUp(200), 3000);
+				} catch (err) {
+					loadingMsg.element.slideUp(100);
+					this.viewer.postError(`Failed to import OSM: ${err.message}`);
+				} finally {
+					elImportBtn.css({ opacity: '', 'pointer-events': '' });
+					elImportFile.val('');
+				}
 			});
 		}
 
@@ -383,6 +393,29 @@ export class Sidebar{
 			}
 		));
 
+		// CLEAR ALL LINESTRINGS
+		$('#map_tools').append(this.createToolIcon(
+			Potree.resourcePath + '/icons/remove.svg',
+			'[title]Remove all LineStrings',
+			async () => {
+				let count = this.viewer.scene.drawLineStrings.length;
+				if (count === 0) {
+					this.viewer.postError("no linestrings to remove");
+					return;
+				}
+				let confirmed = await showConfirmDialog({
+					title: 'Remove all LineStrings',
+					message: `Remove all ${count} linestring${count !== 1 ? 's' : ''} from the scene? This cannot be undone.`,
+					confirmLabel: 'Remove all',
+				});
+				if (!confirmed) return;
+				while (this.viewer.scene.drawLineStrings.length > 0) {
+					this.viewer.scene.removeDrawLineString(this.viewer.scene.drawLineStrings[0]);
+				}
+				this.viewer.postMessage(`Removed ${count} linestring${count !== 1 ? 's' : ''}`, { duration: 3000 });
+			}
+		));
+
 		// CLIPPED MAP
 		$('#map_tools').append(this.createToolIcon(
 			Potree.resourcePath + '/icons/clip_volume.svg',
@@ -442,28 +475,32 @@ export class Sidebar{
 
 ---
 
-## 3. Selecting a LineString
+## 3. Selecting a LineString or Node
+
+Selection is **mutually exclusive** — selecting the line clears any node selection, and selecting a node clears the line selection. Only the selected item turns **red**.
 
 ### Select the whole LineString
 
 | Action | Result |
 |---|---|
-| **Left click** on a line segment in the 3D view | Select that LineString (edges turn **red**) |
+| **Left click** on a line segment in the 3D view | Select that LineString — edges turn **red** |
 | **Click a LineString row** in the Scene panel | Select that LineString |
 | **Escape** (no node selected) | Deselect the LineString |
 
-When a LineString is selected its edges change from green to **red**. The Properties panel opens automatically.
+When a LineString is selected its edges turn **red** and the Properties panel opens. Any previously selected node is deselected.
 
 ### Select an individual node
 
 | Action | Result |
 |---|---|
-| **Ctrl + Left click** on a node sphere in the 3D view | Select that node (turns red) |
+| **Left click** on a node sphere in the 3D view | Select that node — sphere turns **red** |
 | **Click a row** in the Properties panel node table | Select that node |
-| **Click the same row again** | Deselect |
+| **Click the same row / sphere again** | Deselect the node |
 | **Escape** (node selected) | Deselect the current node |
 
-A selected node highlights **yellow** on its connected segments and **red** on the sphere.
+When a node is selected only that sphere turns **red**; the line edges return to their original colour. Any previous whole-line selection is cleared.
+
+> Node spheres are only visible (and clickable) when the camera is within ~500 m of the line.
 
 ---
 
@@ -471,13 +508,31 @@ A selected node highlights **yellow** on its connected segments and **red** on t
 
 | Action | Result |
 |---|---|
-| **Drag** a node sphere in the 3D view | Move it; snaps to point cloud surface |
+| **Drag** a node sphere | Move it; snaps to the point cloud surface, or stays on the same Z-plane if no surface is found |
 | **Arrow keys** (node selected) | Nudge the node in camera-relative X/Y |
-| **Shift + Arrow keys** | Nudge 10x faster |
+| **Shift + Arrow keys** | Nudge 10× faster |
 
-> Arrow key movement is proportional to camera distance — zoom in for finer control.
+> Arrow key step size is proportional to camera distance — zoom in for finer control.
 
-Undo / Redo works for all move operations:
+---
+
+## 5. Moving the Whole LineString
+
+When the **whole line is selected** (no individual node selected), all nodes can be translated together.
+
+| Action | Result |
+|---|---|
+| **Drag** the line body | Moves all nodes by the same XYZ offset; camera stays fixed |
+| **Arrow keys** (line selected) | Nudge the whole line in camera-relative X/Y |
+| **Shift + Arrow keys** | Nudge 10× faster |
+
+The drag plane is horizontal at the line's bounding-box centroid Z, so the relative elevation of all nodes is preserved.
+
+---
+
+## 6. Undo / Redo
+
+All move, insert, delete, and split operations are undoable.
 
 | Action | Result |
 |---|---|
@@ -488,7 +543,7 @@ Up to **50** history steps are kept per session.
 
 ---
 
-## 5. Adding Nodes to an Existing LineString
+## 7. Adding Nodes to an Existing LineString
 
 ### Insert on a segment (Shift + Click)
 
@@ -507,7 +562,7 @@ Up to **50** history steps are kept per session.
 
 ---
 
-## 6. Deleting a Node
+## 8. Deleting a Node
 
 > Minimum 2 nodes must remain — delete is blocked if only 2 are left.
 
@@ -518,7 +573,27 @@ Up to **50** history steps are kept per session.
 
 ---
 
-## 7. Way Tags (Cost Factor, Speed Limit, and Custom Tags)
+## 9. Splitting a Way
+
+Split divides one LineString into two at a selected node. Both resulting ways share the split node ID so the exported OSM topology is properly connected.
+
+1. **Select a middle node** (not the first or last).
+2. Click **✂ Split way at node N** in the Properties panel.
+3. The original way is replaced by two new ways:
+   - **Way A** — start to selected node, keeps the original way ID and all tags.
+   - **Way B** — selected node to end, gets a new way ID on export, copies all tags.
+
+| Condition | Result |
+|---|---|
+| Way has fewer than 3 nodes | Split button disabled |
+| First or last node selected | Split button disabled |
+| Any middle node selected | Split enabled |
+
+> Split is fully undoable with **Ctrl+Z** and redoable with **Ctrl+Y**, sharing the same 50-step history.
+
+---
+
+## 10. Way Tags (Cost Factor, Speed Limit, and Custom Tags)
 
 **Way tags** are key-value metadata that apply to the **entire LineString**. They appear at the top of the Properties panel whenever a LineString is selected.
 
@@ -535,47 +610,59 @@ Every newly drawn LineString starts with two pre-filled way tags:
 
 1. Click **Add tag** at the bottom of the Way Tags section.
 2. Type the **key**, press **Enter** to jump to **value**, press **Enter** to save.
-3. Click the **x** icon to delete a tag.
+3. Click the **×** icon to delete a tag.
 
 > Way tags from imported OSM files are loaded into this editor and are fully editable.
 
 ---
 
-## 8. Adding and Editing Tags on a Node
+## 11. Adding and Editing Tags on a Node
 
 Tags are **custom key-value metadata** stored per node. Exported with the linestring in OSM and GeoJSON.
 
-1. **Select a node** (Ctrl + Click in 3D view, or click a row in the panel).
+1. **Select a node** (click the sphere in the 3D view, or click a row in the panel).
 2. The **Tags** section appears below the node table.
 3. Click **Add tag**, type key + value, press **Enter** to save.
-4. Click the **x** icon to delete a tag.
+4. Click the **×** icon to delete a tag.
 
 > Tags are preserved through undo/redo and carried into export files.
 
 ---
 
-## 9. Deleting a Whole LineString
+## 12. Deleting LineStrings
 
-- In the Properties panel, click the **red remove icon** (bottom-right of the panel).
-- Or select the linestring in the Scene tree and press **Delete**.
+### Delete a single LineString
+
+- In the Properties panel, click the **remove icon** (bottom-right corner).
+- A confirmation dialog appears — click **Remove** to confirm or **Cancel** to abort.
+
+### Delete all LineStrings
+
+- Click the **remove icon** in the **Map Tools** toolbar (between the GeoJSON export and Clipped Map buttons).
+- A confirmation dialog shows the count of linestrings to be removed.
+
+> Deletion cannot be undone — undo history is cleared for removed linestrings.
 
 ---
 
-## 10. Exporting LineStrings
+## 13. Exporting LineStrings
 
 Both export buttons are in the **Map Tools** sidebar.
 
 - **Arrow down icon** — downloads \`linestrings.osm\`
 - **GeoJSON file icon** — downloads \`linestrings.geojson\`
 
+New nodes and ways (drawn in Potree or created by splitting) receive fresh **positive** IDs that do not conflict with existing IDs in the file.
+
 ---
 
-## 11. Importing LineStrings
+## 14. Importing LineStrings
 
-Click the **arrow up icon** — opens a file picker.
+Click the **arrow up icon** — opens a file picker. Accepts \`.osm\` and \`.xml\` files.
 
-- Accepts \`.osm\` and \`.xml\` files.
-- All OSM node tags and way tags are preserved and editable after import.
+A **loading status** message appears during import showing progress (\`Importing linestrings: N / total\`). It auto-dismisses when import completes.
+
+> Requires a point cloud to already be loaded. Defaults to 0 if none is present.
 `;
 
 			const _esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -1093,6 +1180,7 @@ Click the **arrow up icon** — opens a file picker.
 
 		let onDrawLineStringAdded = (e) => {
 			let linestring = e.linestring;
+			if (linestring._osmMeta) return;
 			let icon = Utils.getMeasurementIcon(linestring);
 			createNode("vectors", linestring.name, icon, linestring);
 		};
@@ -1243,9 +1331,12 @@ Click the **arrow up icon** — opens a file picker.
 		};
 
 		let onDrawLineStringRemoved = (e) => {
+			// Imported linestrings (_osmMeta set) are never added to the jstree,
+			// so there is no node to delete — guard against that case.
+			if (e.linestring._osmMeta) return;
 			let vectorsRoot = $("#jstree_scene").jstree().get_json("vectors");
 			let jsonNode = vectorsRoot.children.find(child => child.data.uuid === e.linestring.uuid);
-
+			if (!jsonNode) return;
 			tree.jstree("delete_node", jsonNode.id);
 		};
 

@@ -25,28 +25,32 @@
 
 ---
 
-## 3. Selecting a LineString
+## 3. Selecting a LineString or Node
+
+Selection is **mutually exclusive** — selecting the line clears any node selection, and selecting a node clears the line selection. Only the selected item turns **red**.
 
 ### Select the whole LineString
 
 | Action | Result |
 |---|---|
-| **Left click** on a line segment in the 3D view | Select that LineString (edges turn **cyan**) |
+| **Left click** on a line segment in the 3D view | Select that LineString — edges turn **red** |
 | **Click a LineString row** in the Scene panel (left sidebar) | Select that LineString |
 | **Escape** (no node selected) | Deselect the LineString |
 
-When a LineString is selected its edges change from green to **red** as a visual indicator. The Properties panel opens automatically showing the way tags and node list.
+When a LineString is selected its edges change from green to **red**. The Properties panel opens automatically showing way tags and the node list. Any previously selected node is deselected.
 
 ### Select an individual node
 
 | Action | Result |
 |---|---|
-| **Ctrl + Left click** on a node sphere in the 3D view | Select that node (turns red) |
+| **Left click** on a node sphere in the 3D view | Select that node — sphere turns **red** |
 | **Click a row** in the Properties panel node table | Select that node |
-| **Click the same row again** | Deselect |
+| **Click the same row / sphere again** | Deselect the node |
 | **Escape** (node selected) | Deselect the current node |
 
-A selected node highlights **yellow** on its connected segments and **red** on the sphere.
+When a node is selected only that sphere turns **red**; the line edges return to their original colour. Any previous whole-line selection is cleared.
+
+> Node spheres are only visible (and clickable) when the camera is within ~500 m of the line.
 
 ---
 
@@ -54,13 +58,31 @@ A selected node highlights **yellow** on its connected segments and **red** on t
 
 | Action | Result |
 |---|---|
-| **Drag** a node sphere in the 3D view | Move it; snaps to point cloud or stays on the same Z-plane if no surface is found |
+| **Drag** a node sphere | Move it; snaps to the point cloud surface, or stays on the same Z-plane if no surface is found |
 | **Arrow keys** (node selected) | Nudge the node in camera-relative X/Y |
 | **Shift + Arrow keys** | Nudge 10× faster |
 
-> Arrow key movement is proportional to camera distance — zoom in for finer control.
+> Arrow key step size is proportional to camera distance — zoom in for finer control.
 
-Undo / Redo works for all move operations:
+---
+
+## 5. Moving the Whole LineString
+
+When the **whole line is selected** (no individual node selected), you can translate all nodes together.
+
+| Action | Result |
+|---|---|
+| **Drag** the line body | Moves all nodes by the same XYZ offset; camera stays fixed |
+| **Arrow keys** (line selected) | Nudge the whole line in camera-relative X/Y |
+| **Shift + Arrow keys** | Nudge 10× faster |
+
+The drag plane is horizontal at the line's bounding-box centroid Z, so the relative elevation of all nodes is preserved. Arrow key step size scales with camera distance, same as for node nudging.
+
+---
+
+## 6. Undo / Redo
+
+All move, insert, delete, and split operations are undoable.
 
 | Action | Result |
 |---|---|
@@ -71,7 +93,7 @@ Up to **50** history steps are kept per session.
 
 ---
 
-## 5. Adding Nodes to an Existing LineString
+## 7. Adding Nodes to an Existing LineString
 
 ### Insert on a segment (Shift + Click)
 
@@ -90,7 +112,7 @@ Up to **50** history steps are kept per session.
 
 ---
 
-## 6. Deleting a Node
+## 8. Deleting a Node
 
 > Minimum 2 nodes must remain — delete is blocked if only 2 are left.
 
@@ -101,9 +123,33 @@ Up to **50** history steps are kept per session.
 
 ---
 
-## 7. Way Tags (Cost Factor, Speed Limit, and Custom Tags)
+## 9. Splitting a Way
 
-**Way tags** are key-value metadata that apply to the **entire LineString** (the OSM `<way>` element), as opposed to individual nodes. They appear at the top of the Properties panel whenever a LineString is selected.
+Split divides one LineString into two at a selected node. Both resulting ways share the split node ID so the exported OSM topology is properly connected (useful for intersections).
+
+### How to split
+
+1. **Select a middle node** (any node that is not the first or last).
+2. In the Properties panel, click **✂ Split way at node N**.
+3. The original way is replaced by two new ways:
+   - **Way A** — nodes from the start up to and including the selected node (keeps the original way ID and all tags).
+   - **Way B** — nodes from the selected node to the end (assigned a new way ID on export, copies all tags).
+
+### Constraints
+
+| Condition | Result |
+|---|---|
+| Way has fewer than 3 nodes | Split button disabled |
+| First or last node is selected | Split button disabled |
+| Any middle node selected | Split enabled |
+
+> Split is fully undoable with **Ctrl+Z** and redoable with **Ctrl+Y**. It counts toward the 50-step history limit.
+
+---
+
+## 10. Way Tags (Cost Factor, Speed Limit, and Custom Tags)
+
+**Way tags** are key-value metadata that apply to the **entire LineString** (the OSM `<way>` element). They appear at the top of the Properties panel whenever a LineString is selected.
 
 ### Default way tags
 
@@ -135,44 +181,47 @@ These defaults are editable — change the values directly in the panel.
 
 ---
 
-## 8. Adding and Editing Tags on a Node
+## 11. Adding and Editing Tags on a Node
 
 Tags are **custom key-value metadata** stored per node. They are exported with the linestring in both OSM and GeoJSON formats.
 
 ### Open the tag editor
 
-1. **Select a node** (Ctrl + Click in 3D view, or click a row in the panel).
+1. **Select a node** (click the sphere in the 3D view, or click a row in the panel).
 2. The **Tags** section appears below the node table in the Properties panel, labelled *Tags — Node N*.
 
 ### Add a tag
 
 1. Click **Add tag** at the bottom of the tag editor.
-2. A new empty row appears with the cursor in the **Key** field.
-3. Type the key, press **Enter** to jump to the **Value** field.
-4. Type the value, press **Enter** or click elsewhere to save.
+2. Type the key, press **Enter** to jump to the **Value** field.
+3. Type the value, press **Enter** or click elsewhere to save.
 
-### Edit an existing tag
+### Edit / Delete a tag
 
 - Click directly into any **Key** or **Value** cell and type.
-- **Key** changes are committed on blur (clicking away or pressing Tab).
-- **Value** changes are saved on every keystroke.
-
-### Delete a tag
-
-- Click the **×** icon on the right side of the tag row.
+- Click the **×** icon to delete a tag row.
 
 > Tags are preserved through undo/redo and carried into export files.
 
 ---
 
-## 9. Deleting a Whole LineString
+## 12. Deleting LineStrings
 
-- In the Properties panel, click the **red remove icon** (bottom-right of the panel).
-- Or select the linestring in the Scene tree and press **Delete**.
+### Delete a single LineString
+
+- In the Properties panel, click the **remove icon** (bottom-right corner).
+- A confirmation dialog appears — click **Remove** to confirm or **Cancel** to abort.
+
+### Delete all LineStrings
+
+- Click the **remove icon** in the **Map Tools** toolbar (between the GeoJSON export and Clipped Map buttons).
+- A confirmation dialog shows the count of linestrings to be removed.
+
+> Deletion cannot be undone — undo history is cleared for removed linestrings.
 
 ---
 
-## 10. Exporting LineStrings
+## 13. Exporting LineStrings
 
 Both export buttons are in the **Map Tools** sidebar.
 
@@ -181,7 +230,7 @@ Both export buttons are in the **Map Tools** sidebar.
 Click the **↓ (arrow down)** icon → downloads `linestrings.osm`.
 
 - Preserves original OSM node IDs and way metadata for imported data.
-- New nodes are assigned temporary negative IDs compatible with JOSM.
+- New nodes and ways (drawn in Potree or created by splitting) receive fresh **positive** IDs that do not conflict with any existing IDs in the file.
 
 ### Export as GeoJSON
 
@@ -197,29 +246,44 @@ Output structure:
       "type": "Feature",
       "geometry": {
         "type": "LineString",
-        "coordinates": [[lon, lat, z], ...]
+        "coordinates": [[x, y, z], ...]
       },
       "properties": {
-        "name": "LineString_0",
-        "tags": { },
-        "nodes": [
-          { "tags": { "key": "value" } }
-        ]
+        "name": "LineString_0"
       }
     }
   ]
 }
 ```
 
-- Nodes imported from OSM use their original **longitude/latitude** as coordinates.
-- Manually drawn nodes use **local X/Y/Z** coordinates.
-- The `nodes` array is only included when at least one node has tags.
-
 ---
 
-## 11. Importing LineStrings
+## 14. Importing LineStrings
 
 Click the **↑ (arrow up)** icon → opens a file picker.
 
 - Accepts `.osm` and `.xml` files.
+- A **loading status** message appears during import showing progress (`Importing linestrings: N / total`). It auto-dismisses after import completes.
 - All OSM node tags and way tags are preserved and editable after import.
+
+### Automatic coordinate conversion
+
+If a node in the OSM file is **missing `local_x` / `local_y` tags**, the importer converts its `lat` / `lon` attributes to local scene coordinates automatically:
+
+1. **Primary** — uses the loaded point cloud's projection (most accurate, full decimal precision).
+2. **Fallback** — derives coordinates from UTM easting/northing within the MGRS 100 km grid square (matches the `local_x` / `local_y` encoding used by this project).
+
+### Automatic elevation from point cloud
+
+If a node is **missing an `ele` tag**, the importer finds the closest loaded point in the scene's point cloud (by XY distance) and uses its Z value as the elevation, plus a small offset (`+8 m` by default) so the linestring sits visibly above the surface.
+
+> This requires a point cloud to already be loaded in the scene. If no point cloud is present, elevation defaults to `0`.
+
+### Elevation offset (API)
+
+When loading programmatically the offset can be customised:
+
+```js
+OSMImporter.loadFromFile(viewer, file, { elevationOffset: 1.0 }); // +1 m above surface
+OSMImporter.loadFromFile(viewer, file, { elevationOffset: 0 });   // exact surface level
+```

@@ -160,9 +160,10 @@ export class OSMImporter {
 		return { x: 0, y: 0 };
 	}
 
-	// Build a flat Float32Array of world-space [x, y, z, x, y, z, …] from the
-	// root node of every loaded point cloud. Only the root is sampled for
-	// performance; it contains a representative spread of the full cloud.
+	// Build a spatial grid index of world-space XYZ points from the root and
+	// level-1 children of every loaded point cloud. The grid enables O(1)
+	// amortized nearest-neighbour elevation queries instead of a brute-force
+	// linear scan.
 	static _buildElevationIndex (viewer) {
 		if (!viewer || !viewer.scene || !viewer.scene.pointclouds || !viewer.scene.pointclouds.length) return null;
 
@@ -200,123 +201,154 @@ export class OSMImporter {
 			}
 		}
 
-		return buf.length ? new Float32Array(buf) : null;
+		if (!buf.length) return null;
+
+		const points = new Float32Array(buf);
+
+		// Find XY bounding box.
+		let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+		for (let i = 0; i < points.length; i += 3) {
+			if (points[i]     < minX) minX = points[i];
+			if (points[i]     > maxX) maxX = points[i];
+			if (points[i + 1] < minY) minY = points[i + 1];
+			if (points[i + 1] > maxY) maxY = points[i + 1];
+		}
+
+		const GRID  = 128;
+		const cellW = (maxX - minX) / GRID || 1;
+		const cellH = (maxY - minY) / GRID || 1;
+		const grid  = new Array(GRID * GRID);
+		for (let i = 0; i < grid.length; i++) grid[i] = [];
+
+		for (let i = 0; i < points.length; i += 3) {
+			let cx = Math.min(Math.floor((points[i]     - minX) / cellW), GRID - 1);
+			let cy = Math.min(Math.floor((points[i + 1] - minY) / cellH), GRID - 1);
+			grid[cy * GRID + cx].push(i);
+		}
+
+		return { points, grid, minX, minY, cellW, cellH, GRID };
 	}
 
-	// Query the pre-built elevation index for the Z of the nearest XY point.
+	// Query the spatial grid for the Z of the nearest XY point.
+	// Expands outward ring by ring and exits as soon as no closer point is possible.
 	static _queryElevation (index, x, y) {
-		if (!index || index.length === 0) return null;
+		if (!index) return null;
+
+		const { points, grid, minX, minY, cellW, cellH, GRID } = index;
+
+		let cx = Math.max(0, Math.min(GRID - 1, Math.floor((x - minX) / cellW)));
+		let cy = Math.max(0, Math.min(GRID - 1, Math.floor((y - minY) / cellH)));
+
 		let closestSq = Infinity;
 		let closestZ  = null;
-		for (let i = 0; i < index.length; i += 3) {
-			let dx = index[i]     - x;
-			let dy = index[i + 1] - y;
-			let sq = dx * dx + dy * dy;
-			if (sq < closestSq) {
-				closestSq = sq;
-				closestZ  = index[i + 2];
+
+		for (let r = 0; r <= GRID; r++) {
+			// Once we have a candidate, stop expanding if the nearest possible
+			// point in ring r is already farther away.
+			if (r > 0 && closestZ !== null) {
+				let minRingDist = (r - 1) * Math.min(cellW, cellH);
+				if (minRingDist * minRingDist > closestSq) break;
 			}
+
+			let gx0 = Math.max(0, cx - r), gx1 = Math.min(GRID - 1, cx + r);
+			let gy0 = Math.max(0, cy - r), gy1 = Math.min(GRID - 1, cy + r);
+
+			for (let gy = gy0; gy <= gy1; gy++) {
+				for (let gx = gx0; gx <= gx1; gx++) {
+					// Skip interior cells already visited in a smaller ring.
+					if (r > 0 && gx > gx0 && gx < gx1 && gy > gy0 && gy < gy1) continue;
+
+					let cell = grid[gy * GRID + gx];
+					for (let k = 0; k < cell.length; k++) {
+						let i  = cell[k];
+						let dx = points[i]     - x;
+						let dy = points[i + 1] - y;
+						let sq = dx * dx + dy * dy;
+						if (sq < closestSq) { closestSq = sq; closestZ = points[i + 2]; }
+					}
+				}
+			}
+
+			if (r === 0 && closestZ !== null) break;
 		}
+
 		return closestZ;
 	}
 
 	// ── Scene loader ──────────────────────────────────────────────────────────
 
-	static loadToScene (viewer, osmXmlString, options = {}) {
+	static async loadToScene (viewer, osmXmlString, options = {}) {
 		let { ways, fileMeta } = OSMImporter.parse(osmXmlString);
 		let color           = options.color           || 0x00ff00;
-		let batchSize       = options.batchSize       || 30;
 		let onProgress      = options.onProgress      || null;
 		let elevationOffset = (options.elevationOffset != null) ? options.elevationOffset : 8;
 
-		// Build elevation index once — shared across all ways in this import.
-		// Only built if at least one node is missing an ele tag.
+		const BATCH = 100;
+
+		// Pre-compute local XY for nodes that lack local_x/y tags.
+		for (let wi = 0; wi < ways.length; wi++) {
+			let way = ways[wi];
+			for (let j = 0; j < way.points.length; j++) {
+				if (!way.nodeHasLocalXY[j]) {
+					let { x, y } = OSMImporter._latLonToLocal(viewer, way.nodeLats[j], way.nodeLons[j]);
+					way.points[j].x = x;
+					way.points[j].y = y;
+				}
+			}
+		}
+
 		let elevIndex = null;
-		let needsElev = ways.some(w => w.nodeHasEle.some(v => !v));
-		if (needsElev) {
+		if (ways.some(w => w.nodeHasEle.some(v => !v))) {
 			elevIndex = OSMImporter._buildElevationIndex(viewer);
 		}
 
 		let linestrings = [];
-		let index = 0;
 
-		let promise = new Promise((resolve) => {
-			function processBatch () {
-				let end = Math.min(index + batchSize, ways.length);
+		for (let wi = 0; wi < ways.length; wi++) {
+			let way = ways[wi];
+			let ls  = new DrawLineString();
+			ls.name  = way.name;
+			ls.color.setHex(color);
 
-				for (let i = index; i < end; i++) {
-					let way = ways[i];
-					let ls  = new DrawLineString();
-					ls.name  = way.name;
-					ls.color = new THREE.Color(color);
+			ls._osmMeta = { wayId: way.id, wayTags: way.wayTags, fileMeta };
+			ls._wayTags = way.wayTags;
 
-					// Attach all original OSM metadata so the exporter can
-					// write it back without losing anything.
-					ls._osmMeta = {
-						wayId:    way.id,
-						wayTags:  way.wayTags,
-						fileMeta: fileMeta,
-					};
-					ls._wayTags = Object.assign({}, way.wayTags);
+			for (let j = 0; j < way.points.length; j++) {
+				ls.points.push({
+					position:     way.points[j],
+					_osmNodeId:   way.nodeIds[j],
+					_osmNodeTags: way.nodeTags[j],
+					_osmLat:      way.nodeLats[j],
+					_osmLon:      way.nodeLons[j],
+				});
+			}
+			ls._boundingBoxDirty = true;
 
-					for (let j = 0; j < way.points.length; j++) {
-						let pos = way.points[j].clone();
-
-						// ── Convert lat/lon to local XY if tags were absent ──
-						if (!way.nodeHasLocalXY[j]) {
-							let { x, y } = OSMImporter._latLonToLocal(
-								viewer, way.nodeLats[j], way.nodeLons[j]
-							);
-							pos.x = x;
-							pos.y = y;
-						}
-
-						ls.addMarker(pos);
-						ls.points[j]._osmNodeId   = way.nodeIds[j];
-						ls.points[j]._osmNodeTags = way.nodeTags[j];
-						ls.points[j]._osmLat      = way.nodeLats[j];
-						ls.points[j]._osmLon      = way.nodeLons[j];
+			if (elevIndex) {
+				for (let j = 0; j < ls.points.length; j++) {
+					if (!way.nodeHasEle[j]) {
+						let p = ls.points[j].position;
+						let z = OSMImporter._queryElevation(elevIndex, p.x, p.y);
+						if (z !== null) p.z = z + elevationOffset;
 					}
-
-					// ── Fill missing elevation from closest PCD point ────────
-					if (elevIndex) {
-						let zChanged = false;
-						for (let j = 0; j < ls.points.length; j++) {
-							if (!way.nodeHasEle[j]) {
-								let p = ls.points[j].position;
-								let z = OSMImporter._queryElevation(elevIndex, p.x, p.y);
-								if (z !== null) {
-									p.z = z + elevationOffset;
-									zChanged = true;
-								}
-							}
-						}
-						// Rebuild edge geometry so the lines follow the updated z values.
-						// addMarker already called update() with z=0; we must force a rebuild.
-						if (zChanged) {
-							ls._geometryDirty = true;
-							ls.update();
-						}
-					}
-
-					viewer.scene.addDrawLineString(ls);
-					linestrings.push(ls);
-				}
-
-				index = end;
-				if (onProgress) onProgress(index, ways.length);
-
-				if (index < ways.length) {
-					requestAnimationFrame(processBatch);
-				} else {
-					resolve(linestrings);
 				}
 			}
 
-			requestAnimationFrame(processBatch);
-		});
+			ls._geometryDirty = true;
+			linestrings.push(ls);
+			viewer.scene.addDrawLineString(ls);
 
-		return { promise, wayCount: ways.length };
+			// Yield to the event loop every BATCH ways so the UI stays responsive
+			// and progress updates are visible.
+			if ((wi + 1) % BATCH === 0) {
+				if (onProgress) onProgress(wi + 1, ways.length);
+				await new Promise(r => setTimeout(r, 0));
+			}
+		}
+
+		if (onProgress) onProgress(ways.length, ways.length);
+
+		return { linestrings, wayCount: ways.length };
 	}
 
 	static async loadFromURL (viewer, url, options = {}) {
@@ -328,9 +360,13 @@ export class OSMImporter {
 	static loadFromFile (viewer, file, options = {}) {
 		return new Promise((resolve, reject) => {
 			let reader = new FileReader();
-			reader.onload = (e) => {
-				let result = OSMImporter.loadToScene(viewer, e.target.result, options);
-				resolve(result);
+			reader.onload = async (e) => {
+				try {
+					let result = await OSMImporter.loadToScene(viewer, e.target.result, options);
+					resolve(result);
+				} catch (err) {
+					reject(err);
+				}
 			};
 			reader.onerror = reject;
 			reader.readAsText(file);

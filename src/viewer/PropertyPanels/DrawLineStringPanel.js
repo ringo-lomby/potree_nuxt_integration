@@ -3,6 +3,7 @@
 import * as THREE from "../../../libs/three.js/build/three.module.js";
 import {MeasurePanel} from "./MeasurePanel.js";
 import {Utils} from "../../utils.js";
+import {showConfirmDialog} from "../../utils/ConfirmDialog.js";
 
 const VIRT_THRESHOLD = 100;
 const ROW_H = 22;
@@ -31,8 +32,13 @@ export class DrawLineStringPanel extends MeasurePanel{
 		`);
 
 		this.elRemove = this.elContent.find("img[name=remove]");
-		this.elRemove.click( () => {
-			this.viewer.scene.removeDrawLineString(measurement);
+		this.elRemove.click(async () => {
+			let confirmed = await showConfirmDialog({
+				title: 'Remove LineString',
+				message: `Remove "${measurement.name}"? This cannot be undone.`,
+				confirmLabel: 'Remove',
+			});
+			if (confirmed) this.viewer.scene.removeDrawLineString(measurement);
 		});
 
 		// Cached DOM refs for surgical updates
@@ -51,10 +57,15 @@ export class DrawLineStringPanel extends MeasurePanel{
 		this._buildNodeTagEditor();
 
 		// Surgical event handlers
-		this.propertiesPanel.addVolatileListener(measurement, "marker_added",   () => this._onTopologyChanged());
-		this.propertiesPanel.addVolatileListener(measurement, "marker_removed", () => this._onTopologyChanged());
-		this.propertiesPanel.addVolatileListener(measurement, "marker_moved",   (e) => this._onMarkerMoved(e));
-		this.propertiesPanel.addVolatileListener(measurement, "node_selected",  () => this._onNodeSelected());
+		this.propertiesPanel.addVolatileListener(measurement, "marker_added",      () => this._onTopologyChanged());
+		this.propertiesPanel.addVolatileListener(measurement, "marker_removed",    () => this._onTopologyChanged());
+		this.propertiesPanel.addVolatileListener(measurement, "marker_moved",      (e) => this._onMarkerMoved(e));
+		this.propertiesPanel.addVolatileListener(measurement, "node_selected",     () => this._onNodeSelected());
+		// Fired once after a whole-line drag — rebuilds table + distances in one pass
+		this.propertiesPanel.addVolatileListener(measurement, "markers_all_moved", () => {
+			this._buildNodeTable();
+			this._buildDistancesTable();
+		});
 	}
 
 	// ─── way tags editor ────────────────────────────────────────────────────
@@ -202,8 +213,49 @@ export class DrawLineStringPanel extends MeasurePanel{
 		elContainer.empty();
 		let si = this.measurement.selectedNodeIndex;
 		if (si >= 0 && si < this.measurement.points.length) {
+			elContainer.append(this._buildSplitButton(si));
 			elContainer.append(this._buildTagEditor(this.measurement.points[si], si));
 		}
+	}
+
+	_buildSplitButton(nodeIndex) {
+		let N = this.measurement.points.length;
+		let canSplit = (N >= 3) && (nodeIndex > 0) && (nodeIndex < N - 1);
+
+		let btn = $(`
+			<div style="margin-top: 10px; border-top: 1px solid #444; padding-top: 10px">
+				<button style="
+					width: 100%; padding: 5px 0; font-size: 11px;
+					background: ${canSplit ? '#2a2a2a' : '#1a1a1a'};
+					color: ${canSplit ? '#ccc' : '#555'};
+					border: 1px solid ${canSplit ? '#555' : '#333'};
+					cursor: ${canSplit ? 'pointer' : 'not-allowed'};
+					border-radius: 3px;
+				" ${canSplit ? '' : 'disabled'}>
+					✂ Split way at node ${nodeIndex + 1}
+				</button>
+				${!canSplit ? `<div style="font-size:10px; color:#555; margin-top:4px; text-align:center">
+					${N < 3 ? 'Need at least 3 nodes to split' : 'Select a middle node to split'}
+				</div>` : ''}
+			</div>
+		`);
+
+		if (canSplit) {
+			btn.find('button').click(() => {
+				let tool = this.viewer._drawLineStringTool;
+				if (tool) {
+					tool.splitLineString(this.measurement, nodeIndex);
+				} else {
+					let result = this.measurement.splitAt(nodeIndex);
+					if (!result) return;
+					this.viewer.scene.removeDrawLineString(this.measurement);
+					this.viewer.scene.addDrawLineString(result[0]);
+					this.viewer.scene.addDrawLineString(result[1]);
+				}
+			});
+		}
+
+		return btn;
 	}
 
 	// ─── node table (full or virtualized) ───────────────────────────────────

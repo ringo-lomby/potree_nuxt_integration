@@ -5,6 +5,19 @@ import {Line2} from "../../libs/three.js/lines/Line2.js";
 import {LineGeometry} from "../../libs/three.js/lines/LineGeometry.js";
 import {LineMaterial} from "../../libs/three.js/lines/LineMaterial.js";
 
+// Shared across all DrawLineString instances — created once, never recreated.
+let _sharedNodeGeometry = null;
+let _sharedNodeMaterial = null;
+
+function getSharedNodeGeometry () {
+	if (!_sharedNodeGeometry) _sharedNodeGeometry = new THREE.SphereGeometry(0.4, 6, 6);
+	return _sharedNodeGeometry;
+}
+function getSharedNodeMaterial () {
+	if (!_sharedNodeMaterial) _sharedNodeMaterial = new THREE.MeshLambertMaterial({ color: 0xffffff, depthTest: true, depthWrite: true });
+	return _sharedNodeMaterial;
+}
+
 export class DrawLineString extends THREE.Object3D {
 	constructor () {
 		super();
@@ -18,35 +31,36 @@ export class DrawLineString extends THREE.Object3D {
 		this.selectedNodeIndex = -1;
 		this._hoveredNodeIndex = -1;
 		this._selected = false;
-
-		this.edges = [];
-		this.outlineEdges = [];
 		this.ghostIndex = -1;
 
-		this.boundingBox = new THREE.Box3();
+		// boundingBox, _nodeMatrix, _nodeColor are created lazily on first use
+		// so the constructor stays cheap for bulk imports.
+		this.boundingBox       = null;
 		this._boundingBoxDirty = true;
-		this._geometryDirty = true;
+		this._geometryDirty    = true;
 
-		// Shared geometry/material for all nodes across all linestrings
-		this._nodeGeometry = new THREE.SphereGeometry(0.4, 6, 6);
-		this._nodeMaterial = new THREE.MeshLambertMaterial({
-			color: 0xffffff,   // white so instance colors show through directly
-			depthTest: true,
-			depthWrite: true,
-		});
+		this._nodeGeometry = getSharedNodeGeometry();
+		this._nodeMaterial = getSharedNodeMaterial();
 
-		// InstancedMesh — created on first addMarker, grown as needed
-		this._nodesMesh = null;
+		this._nodesMesh    = null;
 		this._nodeCapacity = 0;
+		this._nodeMatrix   = null;
+		this._nodeColor    = null;
 
-		// Reusable temporaries
-		this._nodeMatrix = new THREE.Matrix4();
-		this._nodeColor  = new THREE.Color();
+		// One Line2 for all committed segments, one for the ghost preview segment.
+		// Both created lazily in _ensureLineObjects().
+		this._lineEdge    = null;   // coloured line,  linewidth 3
+		this._lineOutline = null;   // dark outline,   linewidth 5
+		this._ghostLine   = null;   // grey preview,   linewidth 3 (created on demand)
+
+		// Set true during bulk loads to skip intermediate geometry rebuilds.
+		this._suppressUpdates = false;
 	}
 
 	// ─── bounding box ────────────────────────────────────────────────────────
 
 	getBoundingBox () {
+		if (!this.boundingBox) this.boundingBox = new THREE.Box3();
 		if (this._boundingBoxDirty) {
 			this.boundingBox.makeEmpty();
 			for (let p of this.points) {
@@ -57,25 +71,56 @@ export class DrawLineString extends THREE.Object3D {
 		return this.boundingBox;
 	}
 
-	// ─── edge helpers ────────────────────────────────────────────────────────
+	// ─── polyline objects ─────────────────────────────────────────────────────
 
-	_createEdge (color, linewidth) {
-		let lineGeometry = new LineGeometry();
-		lineGeometry.setPositions([0, 0, 0, 0, 0, 0]);
-		let lineMaterial = new LineMaterial({
-			color: color,
-			linewidth: linewidth,
-			resolution: new THREE.Vector2(1000, 1000),
-			depthTest: true,
-		});
-		let edge = new Line2(lineGeometry, lineMaterial);
-		edge.visible = true;
-		return edge;
+	_ensureLineObjects () {
+		if (this._lineEdge) return;
+
+		this._lineOutline = new Line2(
+			new LineGeometry(),
+			new LineMaterial({
+				color: 0x111111,
+				linewidth: 5,
+				resolution: new THREE.Vector2(1000, 1000),
+				depthTest: true,
+			})
+		);
+		this._lineOutline.visible = false;
+		this.add(this._lineOutline);
+
+		this._lineEdge = new Line2(
+			new LineGeometry(),
+			new LineMaterial({
+				color: this.color.getHex(),
+				linewidth: 3,
+				resolution: new THREE.Vector2(1000, 1000),
+				depthTest: true,
+			})
+		);
+		this._lineEdge.visible = false;
+		this.add(this._lineEdge);
 	}
 
-	// ─── InstancedMesh management ────────────────────────────────────────────
+	_ensureGhostLine () {
+		if (this._ghostLine) return;
+
+		this._ghostLine = new Line2(
+			new LineGeometry(),
+			new LineMaterial({
+				color: 0xaaaaaa,
+				linewidth: 3,
+				resolution: new THREE.Vector2(1000, 1000),
+				depthTest: true,
+			})
+		);
+		this._ghostLine.visible = false;
+		this.add(this._ghostLine);
+	}
+
+	// ─── InstancedMesh management ─────────────────────────────────────────────
 
 	_ensureNodeCapacity (count) {
+		if (!this._nodeMatrix) this._nodeMatrix = new THREE.Matrix4();
 		if (count <= this._nodeCapacity) return;
 
 		let newCapacity = Math.max(16, this._nodeCapacity);
@@ -86,18 +131,16 @@ export class DrawLineString extends THREE.Object3D {
 		this._nodesMesh = new THREE.InstancedMesh(this._nodeGeometry, this._nodeMaterial, newCapacity);
 		this._nodesMesh.name = this.name + '_nodes';
 		this._nodesMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-		this._nodesMesh.frustumCulled = false;  // visibility managed by the tool
+		this._nodesMesh.frustumCulled = false;
 		this._nodesMesh.count = this.points.length;
 
-		// Three.js r124 allocates instanceColor at this.count * 3, which is too small
-		// once nodes are added later. Pre-allocate at full capacity so setColorAt(i)
-		// is always in-bounds regardless of how many nodes exist at creation time.
+		// Three.js r124 allocates instanceColor at this.count * 3, which is too
+		// small once nodes are added later. Pre-allocate at full capacity.
 		this._nodesMesh.instanceColor = new THREE.BufferAttribute(
 			new Float32Array(newCapacity * 3),
 			3
 		);
 
-		// Copy instance matrices (and colors if available) from the old mesh
 		if (oldMesh) {
 			for (let i = 0; i < oldMesh.count; i++) {
 				oldMesh.getMatrixAt(i, this._nodeMatrix);
@@ -184,10 +227,12 @@ export class DrawLineString extends THREE.Object3D {
 		});
 	}
 
-	// ─── node selection ──────────────────────────────────────────────────────
+	// ─── node selection ───────────────────────────────────────────────────────
 
 	selectNode (index) {
 		this.selectedNodeIndex = index;
+		// Selecting a node clears whole-line selection so the two modes are exclusive.
+		if (index >= 0) this._selected = false;
 		this.applyHighlight();
 
 		this.dispatchEvent({
@@ -207,13 +252,15 @@ export class DrawLineString extends THREE.Object3D {
 
 	setGhostIndex (index) {
 		this.ghostIndex = index;
-		this.applyHighlight();
+		this._geometryDirty = true;
+		this.update();
 	}
 
-	// ─── highlight / colors ──────────────────────────────────────────────────
+	// ─── highlight / colors ───────────────────────────────────────────────────
 
 	applyHighlight () {
 		if (!this._nodesMesh) return;
+		if (!this._nodeColor) this._nodeColor = new THREE.Color();
 
 		for (let i = 0; i < this.points.length; i++) {
 			if (i === this.selectedNodeIndex && i !== this.ghostIndex) {
@@ -225,34 +272,20 @@ export class DrawLineString extends THREE.Object3D {
 			}
 			this._nodesMesh.setColorAt(i, this._nodeColor);
 		}
-
 		if (this._nodesMesh.instanceColor) {
 			this._nodesMesh.instanceColor.needsUpdate = true;
 		}
 
-		let baseEdgeColor = this._selected ? new THREE.Color(0xff0000) : this.color;
-		for (let edge of this.edges) {
-			edge.material.color.copy(baseEdgeColor);
-		}
-		for (let outline of this.outlineEdges) {
-			outline.material.color.set(this._selected ? 0x440000 : 0x111111);
-		}
+		if (!this._lineEdge) return;
 
-		if (this.ghostIndex > 0 && this.edges[this.ghostIndex - 1]) {
-			this.edges[this.ghostIndex - 1].material.color.set(0xaaaaaa);
-			if (this.outlineEdges[this.ghostIndex - 1]) {
-				this.outlineEdges[this.ghostIndex - 1].material.color.set(0x444444);
-			}
-		}
-
-		let i = this.selectedNodeIndex;
-		if (i >= 0 && i < this.points.length && i !== this.ghostIndex) {
-			if (i > 0 && this.edges[i - 1])           this.edges[i - 1].material.color.set(0xffff00);
-			if (i < this.edges.length && this.edges[i]) this.edges[i].material.color.set(0xffff00);
-		}
+		// Line turns red only when the whole line is selected with no node selected.
+		// If a node is selected, the node alone is red and the line keeps its original color.
+		const lineHighlighted = this._selected && this.selectedNodeIndex < 0;
+		this._lineEdge.material.color.set(lineHighlighted ? 0xff0000 : this.color.getHex());
+		this._lineOutline.material.color.set(lineHighlighted ? 0x440000 : 0x111111);
 	}
 
-	// ─── marker add / remove / insert ────────────────────────────────────────
+	// ─── marker add / remove / insert ─────────────────────────────────────────
 
 	addMarker (point) {
 		if (point.x != null) {
@@ -266,14 +299,6 @@ export class DrawLineString extends THREE.Object3D {
 
 		this._ensureNodeCapacity(this.points.length);
 		this._nodesMesh.count = this.points.length;
-
-		let outlineEdge = this._createEdge(0x111111, 5);
-		this.add(outlineEdge);
-		this.outlineEdges.push(outlineEdge);
-
-		let edge = this._createEdge(this.color.getHex(), 3);
-		this.add(edge);
-		this.edges.push(edge);
 
 		this.dispatchEvent({
 			type: 'marker_added',
@@ -298,7 +323,6 @@ export class DrawLineString extends THREE.Object3D {
 
 		this._ensureNodeCapacity(this.points.length);
 
-		// Shift instance matrices right to make room at index+1
 		for (let i = this.points.length - 1; i > index + 1; i--) {
 			this._nodesMesh.getMatrixAt(i - 1, this._nodeMatrix);
 			this._nodesMesh.setMatrixAt(i, this._nodeMatrix);
@@ -308,14 +332,6 @@ export class DrawLineString extends THREE.Object3D {
 		this._nodesMesh.setMatrixAt(index + 1, this._nodeMatrix);
 		this._nodesMesh.count = this.points.length;
 		this._nodesMesh.instanceMatrix.needsUpdate = true;
-
-		let outlineEdge = this._createEdge(0x111111, 5);
-		this.add(outlineEdge);
-		this.outlineEdges.splice(index + 1, 0, outlineEdge);
-
-		let edge = this._createEdge(this.color.getHex(), 3);
-		this.add(edge);
-		this.edges.splice(index + 1, 0, edge);
 
 		if (this.selectedNodeIndex > index) {
 			this.selectedNodeIndex++;
@@ -336,20 +352,14 @@ export class DrawLineString extends THREE.Object3D {
 		this._boundingBoxDirty = true;
 		this._geometryDirty = true;
 
-		// Shift instance matrices left to fill the gap
-		for (let i = index; i < this.points.length; i++) {
-			this._nodesMesh.getMatrixAt(i + 1, this._nodeMatrix);
-			this._nodesMesh.setMatrixAt(i, this._nodeMatrix);
+		if (this._nodesMesh) {
+			for (let i = index; i < this.points.length; i++) {
+				this._nodesMesh.getMatrixAt(i + 1, this._nodeMatrix);
+				this._nodesMesh.setMatrixAt(i, this._nodeMatrix);
+			}
+			this._nodesMesh.count = this.points.length;
+			this._nodesMesh.instanceMatrix.needsUpdate = true;
 		}
-		this._nodesMesh.count = this.points.length;
-		this._nodesMesh.instanceMatrix.needsUpdate = true;
-
-		let edgeIndex = (index === 0) ? 0 : (index - 1);
-		this.remove(this.edges[edgeIndex]);
-		this.edges.splice(edgeIndex, 1);
-
-		this.remove(this.outlineEdges[edgeIndex]);
-		this.outlineEdges.splice(edgeIndex, 1);
 
 		if (this.selectedNodeIndex === index) {
 			this.selectedNodeIndex = -1;
@@ -363,7 +373,7 @@ export class DrawLineString extends THREE.Object3D {
 		this.dispatchEvent({type: 'marker_removed', measurement: this});
 	}
 
-	// ─── position setters ────────────────────────────────────────────────────
+	// ─── position setters ─────────────────────────────────────────────────────
 
 	setMarker (index, point) {
 		this.points[index] = point;
@@ -395,6 +405,46 @@ export class DrawLineString extends THREE.Object3D {
 		this.update();
 	}
 
+	// ─── split ────────────────────────────────────────────────────────────────
+
+	splitAt (nodeIndex) {
+		if (this.points.length < 3) return null;
+		if (nodeIndex <= 0 || nodeIndex >= this.points.length - 1) return null;
+
+		let copyPoint = (src, dst) => {
+			dst._osmNodeId   = src._osmNodeId;
+			dst._osmNodeTags = src._osmNodeTags ? Object.assign({}, src._osmNodeTags) : {};
+			dst._osmLat      = src._osmLat;
+			dst._osmLon      = src._osmLon;
+		};
+
+		let wayA = new DrawLineString();
+		wayA.name   = this.name + '_A';
+		wayA.color  = this.color.clone();
+		wayA._osmMeta = this._osmMeta;
+		wayA._wayTags = Object.assign({}, this._wayTags || {});
+
+		for (let i = 0; i <= nodeIndex; i++) {
+			let src = this.points[i];
+			wayA.addMarker(src.position.clone());
+			copyPoint(src, wayA.points[wayA.points.length - 1]);
+		}
+
+		let wayB = new DrawLineString();
+		wayB.name   = this.name + '_B';
+		wayB.color  = this.color.clone();
+		wayB._osmMeta = null;
+		wayB._wayTags = Object.assign({}, this._wayTags || {});
+
+		for (let i = nodeIndex; i < this.points.length; i++) {
+			let src = this.points[i];
+			wayB.addMarker(src.position.clone());
+			copyPoint(src, wayB.points[wayB.points.length - 1]);
+		}
+
+		return [wayA, wayB];
+	}
+
 	// ─── metrics ─────────────────────────────────────────────────────────────
 
 	getTotalDistance () {
@@ -412,10 +462,8 @@ export class DrawLineString extends THREE.Object3D {
 		return distance;
 	}
 
-	// ─── per-frame updates ───────────────────────────────────────────────────
+	// ─── per-frame updates ────────────────────────────────────────────────────
 
-	// Called every frame by the tool for visible linestrings.
-	// Writes position + camera-distance scale into each instance matrix.
 	updateNodeTransforms (camPos, camera, clientWidth, clientHeight) {
 		if (!this._nodesMesh) return;
 		for (let i = 0; i < this.points.length; i++) {
@@ -430,49 +478,95 @@ export class DrawLineString extends THREE.Object3D {
 		this._nodesMesh.instanceMatrix.needsUpdate = true;
 	}
 
-	// Called when geometry is dirty (position change, add/remove marker).
-	// Only rebuilds edge geometry — node transforms are handled by updateNodeTransforms.
+	// Rebuilds the two Line2 objects from the current point list.
+	// Committed segments go into _lineEdge/_lineOutline.
+	// The ghost preview segment (if any) goes into _ghostLine.
 	update () {
+		if (this._suppressUpdates) return;
 		if (!this._geometryDirty || this.points.length === 0) return;
 		this._geometryDirty = false;
 
-		if (this.points.length === 1) {
-			this.applyHighlight();
-			return;
+		// How many points belong to the committed (non-ghost) part.
+		// When ghostIndex >= 0, the ghost point is the last one.
+		const ghostIdx     = this.ghostIndex;
+		const hasGhost     = ghostIdx >= 0 && ghostIdx < this.points.length;
+		const committedEnd = hasGhost ? ghostIdx : this.points.length; // exclusive
+
+		// ── Committed line ────────────────────────────────────────────────────
+		// Needs at least 2 committed points to draw anything.
+		// Closed linestrings repeat the first point at the end.
+		const totalPts = committedEnd + (this.closed && committedEnd >= 2 ? 1 : 0);
+
+		if (totalPts >= 2) {
+			this._ensureLineObjects();
+
+			const pos = new Float32Array(totalPts * 3);
+			for (let i = 0; i < committedEnd; i++) {
+				const p = this.points[i].position;
+				pos[i * 3]     = p.x;
+				pos[i * 3 + 1] = p.y;
+				pos[i * 3 + 2] = p.z;
+			}
+			if (this.closed && committedEnd >= 2) {
+				const p = this.points[0].position;
+				pos[committedEnd * 3]     = p.x;
+				pos[committedEnd * 3 + 1] = p.y;
+				pos[committedEnd * 3 + 2] = p.z;
+			}
+
+			this._lineEdge.geometry.setPositions(pos);
+			// Three.js r124 caches _maxInstanceCount on first render and never
+			// recalculates it when setPositions replaces the instanced attributes
+			// with new objects of a different count. Deleting it forces a recalculate.
+			delete this._lineEdge.geometry._maxInstanceCount;
+			this._lineEdge.computeLineDistances();
+			this._lineEdge.visible = true;
+
+			this._lineOutline.geometry.setPositions(pos);
+			delete this._lineOutline.geometry._maxInstanceCount;
+			this._lineOutline.computeLineDistances();
+			this._lineOutline.visible = true;
+		} else if (this._lineEdge) {
+			this._lineEdge.visible    = false;
+			this._lineOutline.visible = false;
 		}
 
-		let lastIndex = this.points.length - 1;
+		// ── Ghost preview segment ─────────────────────────────────────────────
+		if (hasGhost && ghostIdx > 0) {
+			const p0 = this.points[ghostIdx - 1].position;
+			const p1 = this.points[ghostIdx].position;
 
-		for (let i = 0; i <= lastIndex; i++) {
-			let nextIndex = (i + 1 > lastIndex) ? 0 : i + 1;
-
-			let point     = this.points[i];
-			let nextPoint = this.points[nextIndex];
-
-			let positions = [
-				0, 0, 0,
-				...nextPoint.position.clone().sub(point.position).toArray(),
-			];
-			let isVisible = i < lastIndex || this.closed;
-
-			let outlineEdge = this.outlineEdges[i];
-			outlineEdge.position.copy(point.position);
-			outlineEdge.geometry.setPositions(positions);
-			outlineEdge.geometry.verticesNeedUpdate = true;
-			outlineEdge.geometry.computeBoundingSphere();
-			outlineEdge.computeLineDistances();
-			outlineEdge.visible = isVisible;
-
-			let edge = this.edges[i];
-			edge.position.copy(point.position);
-			edge.geometry.setPositions(positions);
-			edge.geometry.verticesNeedUpdate = true;
-			edge.geometry.computeBoundingSphere();
-			edge.computeLineDistances();
-			edge.visible = isVisible;
+			this._ensureGhostLine();
+			this._ghostLine.geometry.setPositions(new Float32Array([
+				p0.x, p0.y, p0.z,
+				p1.x, p1.y, p1.z,
+			]));
+			delete this._ghostLine.geometry._maxInstanceCount;
+			this._ghostLine.computeLineDistances();
+			this._ghostLine.visible = true;
+		} else if (this._ghostLine) {
+			this._ghostLine.visible = false;
 		}
 
 		this.applyHighlight();
+	}
+
+	// ─── disposal ────────────────────────────────────────────────────────────
+
+	dispose () {
+		// Release unique GPU resources. Shared geometry/material (_nodeGeometry,
+		// _nodeMaterial) must NOT be disposed here — they are reused by every instance.
+		for (let obj of [this._lineEdge, this._lineOutline, this._ghostLine]) {
+			if (!obj) continue;
+			obj.geometry.dispose();
+			obj.material.dispose();
+		}
+		// Null out instance-buffer attributes so the renderer's WeakMap entries
+		// for instanceMatrix / instanceColor can be collected.
+		if (this._nodesMesh) {
+			this._nodesMesh.instanceMatrix = null;
+			this._nodesMesh.instanceColor  = null;
+		}
 	}
 
 	// ─── raycasting ──────────────────────────────────────────────────────────
