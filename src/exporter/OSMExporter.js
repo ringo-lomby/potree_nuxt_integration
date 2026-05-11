@@ -38,10 +38,11 @@ export class OSMExporter {
 				}
 			}
 		}
-		let newNodeId = maxNodeId + 1;
-		let newWayId  = maxWayId  + 1;
-		let allNodes  = [];
-		let allWays   = [];
+		let newNodeId   = maxNodeId + 1;
+		let newWayId    = maxWayId  + 1;
+		let allNodes    = [];
+		let allWays     = [];
+		let seenNodeIds = new Set(); // deduplicate shared junction nodes
 
 		for (let item of items) {
 			if (item instanceof DrawLineString && item.points.length >= 2) {
@@ -51,21 +52,25 @@ export class OSMExporter {
 					let pos = point.position;
 
 					// Original node → keep its ID and lat/lon.
-					// New node (added in Potree) → mint a fresh negative ID.
+					// New node (added in Potree) → mint a fresh positive ID.
 					let nid = (point._osmNodeId != null) ? point._osmNodeId : newNodeId++;
 					let lat = (point._osmLat    != null) ? point._osmLat    : '0';
 					let lon = (point._osmLon    != null) ? point._osmLon    : '0';
 
 					wayNodeIds.push(nid);
-					allNodes.push({
-						id:            nid,
-						lat,
-						lon,
-						x:             pos.x,
-						y:             pos.y,
-						z:             pos.z,
-						preservedTags: point._osmNodeTags || {},
-					});
+					// Emit the <node> element only once per ID (junction nodes appear in 2+ ways).
+					if (!seenNodeIds.has(nid)) {
+						seenNodeIds.add(nid);
+						allNodes.push({
+							id:            nid,
+							lat,
+							lon,
+							x:             pos.x,
+							y:             pos.y,
+							z:             pos.z,
+							preservedTags: point._osmNodeTags || {},
+						});
+					}
 				}
 
 				// Original way → reuse its ID and write back ALL original tags

@@ -3,6 +3,7 @@ import * as THREE from "../../libs/three.js/build/three.module.js";
 import {DrawLineString} from "./DrawLineString.js";
 import {Utils} from "../utils.js";
 import { EventDispatcher } from "../EventDispatcher.js";
+import { showConnectDialog } from "./ConnectDialog.js";
 
 export class DrawLineStringTool extends EventDispatcher {
 	constructor (viewer) {
@@ -20,8 +21,11 @@ export class DrawLineStringTool extends EventDispatcher {
 		this._insertingLinestring = null;
 		this._undoStack = [];
 		this._redoStack = [];
-		this._lsListeners    = new Map();
-		this._dragSnapshots  = new Map();
+		this._lsListeners         = new Map();
+		this._dragSnapshots       = new Map();
+		this._snapHighlightedEndpoint = null; // DrawLineString | null — highlighted snap target
+		this._junctionNodeCounter = -900000000; // decrements for fresh shared junction IDs
+		this._snapNdc             = new THREE.Vector3(); // scratch for endpoint projection
 
 		// Expose the tool on the viewer so panels can reach it without a separate reference.
 		viewer._drawLineStringTool = this;
@@ -58,11 +62,21 @@ export class DrawLineStringTool extends EventDispatcher {
 			if (h) {
 				ls.removeEventListener('drag_start',     h.onDragStart);
 				ls.removeEventListener('marker_dropped', h.onDropped);
+				ls.removeEventListener('marker_moved',   h.onMarkerMoved);
 				this._lsListeners.delete(ls);
 			}
-			// Purge stale undo/redo entries referencing this linestring so it can
-			// be fully garbage-collected (no dangling references to its Three.js objects).
-			const notThis = e => e.ls !== ls && e.original !== ls && e.wayA !== ls && e.wayB !== ls;
+			// Clear snap highlight if the removed linestring was the target.
+			if (this._snapHighlightedEndpoint === ls) {
+				ls._snapHighlighted = false;
+				this._snapHighlightedEndpoint = null;
+			}
+			// Purge stale undo/redo entries referencing this linestring.
+			// Keep merge entries whose lsB is ls — removing lsB is expected during merge,
+			// and the entry must survive so undo can restore it.
+			const notThis = e =>
+				e.ls !== ls && e.original !== ls &&
+				e.wayA !== ls && e.wayB !== ls &&
+				e.lsA !== ls;
 			this._undoStack = this._undoStack.filter(notThis);
 			this._redoStack = this._redoStack.filter(notThis);
 			this._dragSnapshots.delete(ls);
@@ -81,17 +95,47 @@ export class DrawLineStringTool extends EventDispatcher {
 			let onDragStart = () => {
 				this._dragSnapshots.set(ls, this._snapshotPoints(ls));
 			};
-			let onDropped = () => {
+
+			let onDropped = async (e) => {
+				if (this._insertingLinestring) return;
 				let before = this._dragSnapshots.get(ls);
-				if (before !== undefined) {
-					this._pushHistory(ls, before);
-					this._dragSnapshots.delete(ls);
+				if (before !== undefined) this._dragSnapshots.delete(ls);
+
+				let nodeIndex = e.index;
+				let isEndpoint = (nodeIndex === 0 || nodeIndex === ls.points.length - 1);
+
+				if (isEndpoint) {
+					let snap = this._findEndpointSnap(ls, nodeIndex);
+					if (snap) {
+						this._clearSnapHighlight();
+						await this._promptAndConnect(ls, nodeIndex, snap, before);
+						return;
+					}
+				}
+
+				if (before !== undefined) this._pushHistory(ls, before);
+			};
+
+			let onMarkerMoved = (e) => {
+				let i = e.index;
+				if (i !== 0 && i !== ls.points.length - 1) return;
+				let snap = this._findEndpointSnap(ls, i);
+				if (snap) {
+					if (this._snapHighlightedEndpoint !== snap.ls) {
+						this._clearSnapHighlight();
+						snap.ls._snapHighlighted = true;
+						snap.ls.applyHighlight();
+						this._snapHighlightedEndpoint = snap.ls;
+					}
+				} else {
+					this._clearSnapHighlight();
 				}
 			};
 
 			ls.addEventListener('drag_start',     onDragStart);
 			ls.addEventListener('marker_dropped', onDropped);
-			this._lsListeners.set(ls, { onDragStart, onDropped });
+			ls.addEventListener('marker_moved',   onMarkerMoved);
+			this._lsListeners.set(ls, { onDragStart, onDropped, onMarkerMoved });
 		};
 
 		for (let ls of viewer.scene.drawLineStrings) {
@@ -117,6 +161,15 @@ export class DrawLineStringTool extends EventDispatcher {
 						this.viewer.scene.removeDrawLineString(entry.wayA);
 						this.viewer.scene.removeDrawLineString(entry.wayB);
 						this.viewer.scene.addDrawLineString(entry.original);
+					} else if (entry.type === 'merge') {
+						// Undo merge: restore lsA to pre-merge state, put lsB back in scene.
+						this._applySnapshot(entry.lsA, entry.beforeA);
+						this._applySnapshot(entry.lsB, entry.beforeB);
+						this.viewer.scene.addDrawLineString(entry.lsB);
+					} else if (entry.type === 'junction') {
+						// Undo junction: restore both endpoints' positions and IDs.
+						this._applySnapshot(entry.lsA, entry.beforeA);
+						this._applySnapshot(entry.lsB, entry.beforeB);
 					} else {
 						this._applySnapshot(entry.ls, entry.before);
 					}
@@ -131,6 +184,14 @@ export class DrawLineStringTool extends EventDispatcher {
 						this.viewer.scene.removeDrawLineString(entry.original);
 						this.viewer.scene.addDrawLineString(entry.wayA);
 						this.viewer.scene.addDrawLineString(entry.wayB);
+					} else if (entry.type === 'merge') {
+						// Redo merge: re-apply merged state to lsA, remove lsB again.
+						this._applySnapshot(entry.lsA, entry.afterA);
+						this.viewer.scene.removeDrawLineString(entry.lsB);
+					} else if (entry.type === 'junction') {
+						// Redo junction: re-apply shared endpoint state.
+						this._applySnapshot(entry.lsA, entry.afterA);
+						this._applySnapshot(entry.lsB, entry.afterB);
 					} else {
 						this._applySnapshot(entry.ls, entry.after);
 					}
@@ -618,6 +679,98 @@ export class DrawLineStringTool extends EventDispatcher {
 		this.viewer.scene.removeDrawLineString(ls);
 		this.viewer.scene.addDrawLineString(wayA);
 		this.viewer.scene.addDrawLineString(wayB);
+	}
+
+	// ─── endpoint snap / connect ─────────────────────────────────────────────
+
+	// Find the nearest endpoint of any other linestring within snapThresholdPx screen pixels.
+	// Returns { ls, endpointIndex } or null.
+	_findEndpointSnap (draggingLs, draggedNodeIndex, snapThresholdPx = 20) {
+		if (draggedNodeIndex !== 0 && draggedNodeIndex !== draggingLs.points.length - 1) return null;
+
+		let camera = this.viewer.scene.getActiveCamera();
+		let sz     = this.renderer.getSize(new THREE.Vector2());
+
+		this._snapNdc.copy(draggingLs.points[draggedNodeIndex].position).project(camera);
+		if (this._snapNdc.z > 1) return null;
+
+		let sxA = (this._snapNdc.x + 1) / 2 * sz.width;
+		let syA = (1 - this._snapNdc.y) / 2 * sz.height;
+
+		let best = null;
+		let bestDist = snapThresholdPx;
+
+		for (let ls of this.viewer.scene.drawLineStrings) {
+			if (ls === draggingLs) continue;
+			for (let endIdx of [0, ls.points.length - 1]) {
+				this._snapNdc.copy(ls.points[endIdx].position).project(camera);
+				if (this._snapNdc.z > 1) continue;
+
+				let sxB = (this._snapNdc.x + 1) / 2 * sz.width;
+				let syB = (1 - this._snapNdc.y) / 2 * sz.height;
+				let d   = Math.sqrt((sxA - sxB) ** 2 + (syA - syB) ** 2);
+
+				if (d < bestDist) {
+					bestDist = d;
+					best = { ls, endpointIndex: endIdx };
+				}
+			}
+		}
+
+		return best;
+	}
+
+	_clearSnapHighlight () {
+		if (!this._snapHighlightedEndpoint) return;
+		this._snapHighlightedEndpoint._snapHighlighted = false;
+		this._snapHighlightedEndpoint.applyHighlight();
+		this._snapHighlightedEndpoint = null;
+	}
+
+	async _promptAndConnect (lsA, myEndIndex, snap, before) {
+		// Snap the dragged endpoint exactly onto the target.
+		lsA.setPosition(myEndIndex, snap.ls.points[snap.endpointIndex].position.clone());
+
+		let result = await showConnectDialog({ labelA: lsA.name, labelB: snap.ls.name });
+
+		if (!result) {
+			// Cancelled — restore pre-drag position.
+			if (before) this._applySnapshot(lsA, before);
+			return;
+		}
+
+		this._connectLineStrings(lsA, myEndIndex, snap.ls, snap.endpointIndex, result, before);
+	}
+
+	_connectLineStrings (lsA, endIndexA, lsB, endIndexB, mode, beforeA) {
+		let beforeB = this._snapshotPoints(lsB);
+
+		if (mode === 'merge') {
+			lsA.mergeWith(lsB, endIndexA, endIndexB);
+			this.viewer.scene.removeDrawLineString(lsB);
+
+			let afterA = this._snapshotPoints(lsA);
+			if (this._undoStack.length >= 50) this._undoStack.shift();
+			this._undoStack.push({ type: 'merge', lsA, lsB, beforeA, beforeB, afterA });
+			this._redoStack = [];
+
+		} else {
+			// junction — snap both endpoints to the same position, share one node ID
+			let sharedPos = lsA.points[endIndexA].position.clone();
+			lsB.setPosition(endIndexB, sharedPos);
+
+			let sharedId = lsA.points[endIndexA]._osmNodeId
+				?? lsB.points[endIndexB]._osmNodeId
+				?? (this._junctionNodeCounter--);
+			lsA.points[endIndexA]._osmNodeId = sharedId;
+			lsB.points[endIndexB]._osmNodeId = sharedId;
+
+			let afterA = this._snapshotPoints(lsA);
+			let afterB = this._snapshotPoints(lsB);
+			if (this._undoStack.length >= 50) this._undoStack.shift();
+			this._undoStack.push({ type: 'junction', lsA, lsB, beforeA, beforeB, afterA, afterB });
+			this._redoStack = [];
+		}
 	}
 
 	onSceneChange (e) {

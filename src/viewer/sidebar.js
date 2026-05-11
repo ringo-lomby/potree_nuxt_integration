@@ -739,6 +739,20 @@ A **loading status** message appears showing progress (\`Importing linestrings: 
 Nodes missing \`local_x\` / \`local_y\` are converted from \`lat\` / \`lon\` automatically. Nodes missing \`ele\` get their elevation from the nearest point in the loaded point cloud (+8 m offset).
 
 > Requires a point cloud to already be loaded. Defaults to 0 if none is present.
+
+---
+
+## 15. Connecting Two LineStrings
+
+Drag the **first or last node** of one linestring toward the **first or last node** of another. When the dragged node comes within ~20 px of the target endpoint, that endpoint turns **cyan**. Release the mouse to open the **Connect LineStrings** dialog.
+
+| Button | Effect |
+|---|---|
+| **Merge into one** | Joins the two ways into one. The dragging way keeps its name and tags. |
+| **Link endpoints** | Both ways stay separate but share the same OSM node ID at their junction. |
+| **Cancel** | Dragged endpoint snaps back to its original position. |
+
+All four endpoint combinations are supported (end→start, end→end, start→start, start→end). Both modes are fully undoable with **Ctrl+Z**.
 `;
 
 			const _esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');

@@ -313,6 +313,45 @@ OSMImporter.loadFromFile(viewer, file, { elevationOffset: 0 });   // exact surfa
 
 ---
 
-## 15. In-App Help
+## 15. Connecting Two LineStrings
+
+Two linestrings can be connected by dragging an endpoint node of one onto an endpoint node of another.
+
+### How to connect
+
+1. Select a linestring so its nodes are visible.
+2. **Drag** the **first or last node** of one linestring toward the **first or last node** of another.
+3. When the dragged node comes within ~20 px (screen) of the target endpoint, that endpoint turns **cyan** to indicate a snap.
+4. Release the mouse — a **Connect LineStrings** dialog appears.
+
+### Dialog choices
+
+| Button | Effect |
+|---|---|
+| **Merge into one** | The two ways are joined into a single linestring. The dragging way's identity (name, way tags, OSM ID) is preserved. |
+| **Link endpoints** | Both ways stay separate, but their endpoints are snapped to the same position and share the same OSM node ID — creating a proper junction in the exported file. |
+| **Cancel** | The dragged endpoint snaps back to its original position. |
+
+### Endpoint combinations
+
+All four combinations are supported — end→start, end→end, start→start, start→end. For **Merge**, the linestrings are reversed internally as needed so the junction is seamless.
+
+### Undo / Redo
+
+Both modes are fully undoable.
+
+| Action | Undo (Ctrl+Z) | Redo (Ctrl+Y) |
+|---|---|---|
+| Merge | Splits back into two separate linestrings at their original positions | Re-applies the merge |
+| Link | Restores both endpoints' original positions and node IDs | Re-applies the junction |
+
+### OSM export
+
+- **Merge** — the consumed linestring is removed; the merged way is exported as a single `<way>`.
+- **Link** — both ways are exported, and the shared endpoint appears as exactly **one** `<node>` element referenced by both `<way>` elements.
+
+---
+
+## 16. In-App Help
 
 Click the **? (LineString Guide)** icon at the end of the **Map Tools** toolbar to open a scrollable overlay with this guide rendered inside the viewer. Press **Escape** or the × button to close it.

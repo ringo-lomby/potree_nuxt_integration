@@ -31,6 +31,7 @@ export class DrawLineString extends THREE.Object3D {
 		this.selectedNodeIndex = -1;
 		this._hoveredNodeIndex = -1;
 		this._selected = false;
+		this._snapHighlighted = false; // set by DrawLineStringTool during endpoint snap
 		this.ghostIndex = -1;
 
 		// boundingBox, _nodeMatrix, _nodeColor are created lazily on first use
@@ -263,8 +264,11 @@ export class DrawLineString extends THREE.Object3D {
 		if (!this._nodeColor) this._nodeColor = new THREE.Color();
 
 		for (let i = 0; i < this.points.length; i++) {
+			let isEndpoint = (i === 0 || i === this.points.length - 1);
 			if (i === this.selectedNodeIndex && i !== this.ghostIndex) {
 				this._nodeColor.set(0xff0000);
+			} else if (this._snapHighlighted && isEndpoint) {
+				this._nodeColor.set(0x00ffff); // cyan — snap target
 			} else if (i === this._hoveredNodeIndex && i !== this.selectedNodeIndex) {
 				this._nodeColor.set(0xffffff);
 			} else {
@@ -443,6 +447,54 @@ export class DrawLineString extends THREE.Object3D {
 		}
 
 		return [wayA, wayB];
+	}
+
+	// ─── merge ───────────────────────────────────────────────────────────────
+
+	_copyOsmMeta (src, dst) {
+		dst._osmNodeId   = src._osmNodeId;
+		dst._osmNodeTags = src._osmNodeTags ? Object.assign({}, src._osmNodeTags) : {};
+		dst._osmLat      = src._osmLat;
+		dst._osmLon      = src._osmLon;
+	}
+
+	// Merge `otherLS` into `this` by joining their endpoints.
+	// `myEndIndex`    — 0 (start) or this.points.length-1 (end): which endpoint was dragged
+	// `theirEndIndex` — 0 or otherLS.points.length-1: which endpoint was snapped to
+	// Returns `this` (mutated). Caller must remove `otherLS` from the scene.
+	mergeWith (otherLS, myEndIndex, theirEndIndex) {
+		if (this.points.length < 2 || otherLS.points.length < 2) return this;
+
+		// Normalise: if the dragged endpoint is at the start, reverse this so it is at the end.
+		if (myEndIndex === 0) {
+			this.points.reverse();
+			this.selectedNodeIndex = -1;
+			this._boundingBoxDirty = true;
+			this._geometryDirty    = true;
+		}
+
+		// Now this.points[last] is the junction. Decide the order to append from otherLS:
+		// if theirEndIndex is 0 → append [1..N-1] in forward order
+		// if theirEndIndex is N-1 → append [N-2..0] in reverse (so their start comes last)
+		let N = otherLS.points.length;
+		let indices = [];
+		if (theirEndIndex === 0) {
+			for (let i = 1; i < N; i++) indices.push(i);
+		} else {
+			for (let i = N - 2; i >= 0; i--) indices.push(i);
+		}
+
+		this._suppressUpdates = true;
+		for (let idx of indices) {
+			let src = otherLS.points[idx];
+			this.addMarker(src.position.clone());
+			this._copyOsmMeta(src, this.points[this.points.length - 1]);
+		}
+		this._suppressUpdates = false;
+		this._geometryDirty = true;
+		this.update();
+
+		return this;
 	}
 
 	// ─── metrics ─────────────────────────────────────────────────────────────
