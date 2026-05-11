@@ -3,6 +3,7 @@ import * as THREE from "../../libs/three.js/build/three.module.js";
 import {GeoJSONExporter} from "../exporter/GeoJSONExporter.js"
 import {DXFExporter} from "../exporter/DXFExporter.js"
 import {OSMExporter} from "../exporter/OSMExporter.js"
+import {OSMPatcher} from "../exporter/OSMPatcher.js"
 import {OSMImporter} from "../importer/OSMImporter.js"
 import {Volume, BoxVolume, SphereVolume} from "../utils/Volume.js"
 import {PolygonClipVolume} from "../utils/PolygonClipVolume.js"
@@ -23,6 +24,7 @@ import {Images360} from "../modules/Images360/Images360.js";
 
 import JSON5 from "../../libs/json5-2.1.3/json5.mjs";
 import {showConfirmDialog} from "../utils/ConfirmDialog.js";
+import {showSaveOSMDialog} from "../utils/SaveOSMDialog.js";
 
 export class Sidebar{
 
@@ -283,29 +285,26 @@ export class Sidebar{
 			let elImportFile = $('<input type="file" accept=".osm,.xml" style="display:none"/>');
 			$('body').append(elImportFile);
 
-			let elImportBtn = this.createToolIcon(
-				Potree.resourcePath + '/icons/arrow_up.svg',
-				'[title]Import LineStrings (OSM)',
-				() => {
-					$('#menu_scene').next().slideDown();
-					elImportFile.click();
-				}
-			);
-			$('#map_tools').append(elImportBtn);
+			let elImportBtn;
 
-			elImportFile.on('change', async (event) => {
-				let file = event.target.files[0];
-				if (!file) return;
-
+			const doImport = async (file, fileHandle) => {
 				elImportBtn.css({ opacity: '0.4', 'pointer-events': 'none' });
 				let loadingMsg = this.viewer.postMessage(`Importing linestrings from ${file.name}…`);
-
 				try {
-					let result = await OSMImporter.loadFromFile(this.viewer, file, {
+					let rawXml = await file.text();
+					let result = await OSMImporter.loadToScene(this.viewer, rawXml, {
 						onProgress: (done, total) => {
 							loadingMsg.setMessage(`Importing linestrings: ${done} / ${total}`);
 						}
 					});
+					this._osmFileHandle = fileHandle;
+					this._osmFileName = file.name;
+					this._osmOriginalXml = rawXml;
+					this._osmImportedWayIds = new Set(
+						result.linestrings
+							.filter(ls => ls._osmMeta && ls._osmMeta.wayId != null)
+							.map(ls => String(ls._osmMeta.wayId))
+					);
 					loadingMsg.setMessage(`Imported ${result.wayCount} linestrings from ${file.name}`);
 					setTimeout(() => loadingMsg.element.slideUp(200), 3000);
 				} catch (err) {
@@ -315,6 +314,39 @@ export class Sidebar{
 					elImportBtn.css({ opacity: '', 'pointer-events': '' });
 					elImportFile.val('');
 				}
+			};
+
+			elImportBtn = this.createToolIcon(
+				Potree.resourcePath + '/icons/arrow_up.svg',
+				'[title]Import LineStrings (OSM)',
+				async () => {
+					$('#menu_scene').next().slideDown();
+
+					if (window.showOpenFilePicker) {
+						try {
+							let [fileHandle] = await window.showOpenFilePicker({
+								types: [{ description: 'OSM Files', accept: { 'application/xml': ['.osm', '.xml'] } }],
+								multiple: false
+							});
+							let file = await fileHandle.getFile();
+							await doImport(file, fileHandle);
+						} catch (err) {
+							if (err.name !== 'AbortError') {
+								this.viewer.postError(`Failed to open file: ${err.message}`);
+							}
+						}
+					} else {
+						elImportFile.click();
+					}
+				}
+			);
+			$('#map_tools').append(elImportBtn);
+
+			// Fallback for browsers without File System Access API
+			elImportFile.on('change', async (event) => {
+				let file = event.target.files[0];
+				if (!file) return;
+				await doImport(file, null);
 			});
 		}
 
@@ -322,23 +354,58 @@ export class Sidebar{
 		$('#map_tools').append(this.createToolIcon(
 			Potree.resourcePath + '/icons/arrow_down.svg',
 			'[title]Save all LineStrings as OSM',
-			() => {
+			async () => {
 				let linestrings = this.viewer.scene.drawLineStrings;
 
-				if (linestrings.length === 0) {
+				if (!this._osmOriginalXml && linestrings.length === 0) {
 					this.viewer.postError("no linestrings to save");
 					return;
 				}
 
-				let osm = OSMExporter.toOSM(linestrings);
-				let url = window.URL.createObjectURL(new Blob([osm], {type: 'application/octet-stream'}));
-				let a = document.createElement('a');
-				a.href = url;
-				a.download = 'linestrings.osm';
-				document.body.appendChild(a);
-				a.click();
-				document.body.removeChild(a);
-				window.URL.revokeObjectURL(url);
+				// Ask the user where to save when an original file is present.
+				let choice = 'existing';
+				if (this._osmOriginalXml) {
+					choice = await showSaveOSMDialog(this._osmFileName);
+					if (!choice) return; // cancelled
+				}
+
+				const downloadAs = (content, filename) => {
+					let url = window.URL.createObjectURL(new Blob([content], {type: 'application/octet-stream'}));
+					let a = document.createElement('a');
+					a.href = url;
+					a.download = filename;
+					document.body.appendChild(a);
+					a.click();
+					document.body.removeChild(a);
+					window.URL.revokeObjectURL(url);
+				};
+
+				if (choice === 'existing') {
+					let osm = OSMPatcher.patch(this._osmOriginalXml, linestrings, this._osmImportedWayIds);
+					if (this._osmFileHandle) {
+						try {
+							let writable = await this._osmFileHandle.createWritable();
+							await writable.write(osm);
+							await writable.close();
+							let msg = this.viewer.postMessage(`Saved to ${this._osmFileName}`);
+							setTimeout(() => msg.element.slideUp(200), 3000);
+						} catch (err) {
+							this.viewer.postError(`Failed to save: ${err.message}`);
+						}
+					} else {
+						downloadAs(osm, this._osmFileName);
+					}
+				} else {
+					// 'new' — same patched content, downloaded as a new file
+					let osm = this._osmOriginalXml
+						? OSMPatcher.patch(this._osmOriginalXml, linestrings, this._osmImportedWayIds)
+						: OSMExporter.toOSM(linestrings);
+					if (!osm) {
+						this.viewer.postError("no linestrings to export");
+						return;
+					}
+					downloadAs(osm, 'linestrings.osm');
+				}
 			}
 		));
 
@@ -649,10 +716,17 @@ Tags are **custom key-value metadata** stored per node. Exported with the linest
 
 Both export buttons are in the **Map Tools** sidebar.
 
-- **Arrow down icon** — downloads \`linestrings.osm\`
-- **GeoJSON file icon** — downloads \`linestrings.geojson\`
+### Save as OSM
 
-New nodes and ways (drawn in Potree or created by splitting) receive fresh **positive** IDs that do not conflict with existing IDs in the file.
+Click the **arrow down icon**.
+
+If no file was imported, \`linestrings.osm\` downloads immediately. If a file was imported this session, a dialog lets you choose: **Save to [filename]**, **Create new file**, or **Cancel**.
+
+New nodes and ways receive fresh **positive** IDs that do not conflict with existing IDs.
+
+### Export as GeoJSON
+
+Click the **GeoJSON file icon** → downloads \`linestrings.geojson\`. Way tags appear under \`properties.tags\` and per-node tags under \`properties.nodes\` (both omitted when empty). Imported nodes export \`[lon, lat, z]\` coordinates; drawn nodes export \`[x, y, z]\`.
 
 ---
 
@@ -660,7 +734,9 @@ New nodes and ways (drawn in Potree or created by splitting) receive fresh **pos
 
 Click the **arrow up icon** — opens a file picker. Accepts \`.osm\` and \`.xml\` files.
 
-A **loading status** message appears during import showing progress (\`Importing linestrings: N / total\`). It auto-dismisses when import completes.
+A **loading status** message appears showing progress (\`Importing linestrings: N / total\`). It auto-dismisses when complete.
+
+Nodes missing \`local_x\` / \`local_y\` are converted from \`lat\` / \`lon\` automatically. Nodes missing \`ele\` get their elevation from the nearest point in the loaded point cloud (+8 m offset).
 
 > Requires a point cloud to already be loaded. Defaults to 0 if none is present.
 `;

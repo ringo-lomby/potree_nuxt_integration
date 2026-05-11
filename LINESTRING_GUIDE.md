@@ -227,10 +227,21 @@ Both export buttons are in the **Map Tools** sidebar.
 
 ### Export as OSM
 
-Click the **↓ (arrow down)** icon → downloads `linestrings.osm`.
+Click the **↓ (arrow down)** icon.
 
-- Preserves original OSM node IDs and way metadata for imported data.
-- New nodes and ways (drawn in Potree or created by splitting) receive fresh **positive** IDs that do not conflict with any existing IDs in the file.
+**If no file was previously imported** — downloads `linestrings.osm` immediately.
+
+**If a file was imported this session** — a **Save dialog** appears with three choices:
+
+| Choice | Result |
+|---|---|
+| **Save to [filename]** | Patches the original XML and saves/downloads it under the same filename |
+| **Create new file** | Downloads a fresh `linestrings.osm` |
+| **Cancel** | Aborts — no file is written |
+
+> When a writable file handle is available (browser supports the File System Access API), "Save to [filename]" writes directly to disk without a download prompt.
+
+New nodes and ways (drawn in Potree or created by splitting) always receive fresh **positive** IDs that do not conflict with any existing IDs in the original file.
 
 ### Export as GeoJSON
 
@@ -249,12 +260,21 @@ Output structure:
         "coordinates": [[x, y, z], ...]
       },
       "properties": {
-        "name": "LineString_0"
+        "name": "LineString_0",
+        "tags": { "cost_factor": "1.000000", "speed_limit": "10" },
+        "nodes": [
+          { "tags": {} },
+          { "tags": { "some_key": "some_value" } }
+        ]
       }
     }
   ]
 }
 ```
+
+- `tags` is omitted if the way has no tags.
+- `nodes` is omitted if no node in the way has any tags.
+- For nodes that originated from an OSM import, coordinates are `[lon, lat, z]` (geographic WGS-84) rather than `[x, y, z]` (local scene).
 
 ---
 
@@ -265,6 +285,7 @@ Click the **↑ (arrow up)** icon → opens a file picker.
 - Accepts `.osm` and `.xml` files.
 - A **loading status** message appears during import showing progress (`Importing linestrings: N / total`). It auto-dismisses after import completes.
 - All OSM node tags and way tags are preserved and editable after import.
+- The imported filename is remembered by the session so the OSM export button can offer to overwrite it.
 
 ### Automatic coordinate conversion
 
@@ -277,6 +298,8 @@ If a node in the OSM file is **missing `local_x` / `local_y` tags**, the importe
 
 If a node is **missing an `ele` tag**, the importer finds the closest loaded point in the scene's point cloud (by XY distance) and uses its Z value as the elevation, plus a small offset (`+8 m` by default) so the linestring sits visibly above the surface.
 
+The elevation lookup uses a 128×128 spatial grid index built from the root and level-1 children of every loaded point cloud, so it is fast even for large scenes.
+
 > This requires a point cloud to already be loaded in the scene. If no point cloud is present, elevation defaults to `0`.
 
 ### Elevation offset (API)
@@ -287,3 +310,9 @@ When loading programmatically the offset can be customised:
 OSMImporter.loadFromFile(viewer, file, { elevationOffset: 1.0 }); // +1 m above surface
 OSMImporter.loadFromFile(viewer, file, { elevationOffset: 0 });   // exact surface level
 ```
+
+---
+
+## 15. In-App Help
+
+Click the **? (LineString Guide)** icon at the end of the **Map Tools** toolbar to open a scrollable overlay with this guide rendered inside the viewer. Press **Escape** or the × button to close it.
