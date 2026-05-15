@@ -1401,12 +1401,16 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 		tree.on("deselect_node.jstree", (e, data) => {
 			propertiesPanel.set(null);
 			showInlinePanel(null);
-			// Clear whole-linestring highlight when deselected from the tree
+			// Clear all highlight state when deselected from the tree
 			for (let ls of this.viewer.scene.drawLineStrings) {
-				if (ls._selected) {
-					ls._selected = false;
-					ls.applyHighlight();
+				ls._selected = false;
+				ls.selectedNodeIndex = -1;
+				ls.selectedNodeIndices.clear();
+				if (ls._highlightEdgeLine) {
+					ls._highlightEdgeLine.visible = false;
+					ls._highlightEdgeOutline.visible = false;
 				}
+				ls.applyHighlight();
 			}
 		});
 

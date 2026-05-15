@@ -521,6 +521,14 @@ export class DrawLineStringTool extends EventDispatcher {
 					ls.selectedNodeIndex = -1;
 					changed = true;
 				}
+				if (!next) {
+					ls.selectedNodeIndex = -1;
+					ls.selectedNodeIndices.clear();
+					if (ls._highlightEdgeLine) {
+						ls._highlightEdgeLine.visible = false;
+						ls._highlightEdgeOutline.visible = false;
+					}
+				}
 				ls.applyHighlight();
 			}
 
