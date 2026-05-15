@@ -266,6 +266,7 @@ export class OSMPatcher {
 				ndEl.setAttribute('ref', String(nid));
 				wayEl.appendChild(ndEl);
 			}
+			if (ls.closed && wayNodeIds.length > 0) wayNodeIds.push(wayNodeIds[0]);
 			let wayTags = Object.assign({}, ls._wayTags || {});
 			if (ls.name && !wayTags['name']) wayTags['name'] = ls.name;
 			for (let k in wayTags) {

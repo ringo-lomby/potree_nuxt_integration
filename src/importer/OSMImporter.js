@@ -102,6 +102,13 @@ export class OSMImporter {
 				wayTags[tag.getAttribute('k')] = tag.getAttribute('v');
 			}
 
+			// Detect standard OSM closed ring (first nd ref == last nd ref).
+			let closedRing = nodeIds.length >= 2 && nodeIds[0] === nodeIds[nodeIds.length - 1];
+			if (closedRing) {
+				points.pop(); nodeIds.pop(); nodeLats.pop(); nodeLons.pop();
+				nodeTags.pop(); nodeHasLocalXY.pop(); nodeHasEle.pop();
+			}
+
 			if (points.length >= 2) {
 				ways.push({
 					id: wayId,
@@ -114,6 +121,7 @@ export class OSMImporter {
 					nodeHasLocalXY,
 					nodeHasEle,
 					wayTags,
+					closedRing,
 				});
 			}
 		}
@@ -308,7 +316,8 @@ export class OSMImporter {
 			let way = ways[wi];
 			let ls  = new DrawLineString();
 			ls.name  = way.name;
-			ls.color.setHex(color);
+			const isArea = way.wayTags && way.wayTags.area === 'yes';
+			ls.color.setHex(isArea ? 0x44aaff : color);
 
 			ls._osmMeta = { wayId: way.id, wayTags: way.wayTags, fileMeta };
 			ls._wayTags = way.wayTags;
@@ -332,6 +341,11 @@ export class OSMImporter {
 						if (z !== null) p.z = z + elevationOffset;
 					}
 				}
+			}
+
+			if (isArea || way.closedRing) {
+				ls.closed = true;
+				if (!isArea) ls.showFill = false;
 			}
 
 			ls._geometryDirty = true;

@@ -77,6 +77,9 @@ export class OSMExporter {
 				// exactly as they were. No tags are added or removed.
 				let wayId   = (item._osmMeta != null) ? item._osmMeta.wayId : newWayId++;
 				let wayTags = item._wayTags || (item._osmMeta != null ? item._osmMeta.wayTags : {});
+				if (item.closed && wayNodeIds.length > 0) {
+					wayNodeIds.push(wayNodeIds[0]);
+				}
 
 				allWays.push({ id: wayId, nodeIds: wayNodeIds, tags: wayTags });
 

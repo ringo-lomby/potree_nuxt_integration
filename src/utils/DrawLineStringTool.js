@@ -422,7 +422,7 @@ export class DrawLineStringTool extends EventDispatcher {
 			let hitDist = Infinity;
 
 			for (let ls of this.viewer.scene.drawLineStrings) {
-				if (!ls._nodesMesh || !ls._nodesMesh.visible) continue;
+				if (!ls._nodesMesh || !ls._nodesMesh.visible || !ls._nodesMesh.instanceMatrix) continue;
 				let hits = [];
 				ls._nodesMesh.raycast(raycaster, hits);
 				for (let hit of hits) {
@@ -739,7 +739,7 @@ export class DrawLineStringTool extends EventDispatcher {
 		let raycaster = new THREE.Raycaster();
 		raycaster.setFromCamera(nmouse, this.viewer.scene.getActiveCamera());
 		for (let ls of this.viewer.scene.drawLineStrings) {
-			if (!ls._nodesMesh || !ls._nodesMesh.visible) continue;
+			if (!ls._nodesMesh || !ls._nodesMesh.visible || !ls._nodesMesh.instanceMatrix) continue;
 			let hits = [];
 			ls._nodesMesh.raycast(raycaster, hits);
 			if (hits.length > 0) return true;
@@ -810,6 +810,37 @@ export class DrawLineStringTool extends EventDispatcher {
 					hitLs         = ls;
 					hitSegIdx     = i;
 					hitPos        = segPoint.clone();
+				}
+			}
+
+			// Test the closing edge (last → first) for closed polygons
+			if (ls.closed && ls.points.length >= 3) {
+				let p0 = ls.points[ls.points.length - 1].position;
+				let p1 = ls.points[0].position;
+				d2n.subVectors(p1, p0);
+				let segLen = d2n.length();
+				if (segLen >= 1e-10) {
+					d2n.divideScalar(segLen);
+					rVec.subVectors(p0, rayOrigin);
+					let cosTheta = rayDir.dot(d2n);
+					let e1 = rayDir.dot(rVec);
+					let e2 = d2n.dot(rVec);
+					let denom = 1 - cosTheta * cosTheta;
+					let t = (Math.abs(denom) < 1e-10) ? e2 : (e1 * cosTheta - e2) / denom;
+					t = Math.max(0, Math.min(segLen, t));
+					segPoint.copy(p0).addScaledVector(d2n, t);
+					ndc.copy(segPoint).project(camera);
+					if (ndc.z <= 1) {
+						let sx = (ndc.x + 1) / 2 * renderAreaSize.width;
+						let sy = (1 - ndc.y) / 2 * renderAreaSize.height;
+						let screenDist = Math.sqrt((sx - x) ** 2 + (sy - y) ** 2);
+						if (screenDist < thresholdPx && screenDist < hitScreenDist) {
+							hitScreenDist = screenDist;
+							hitLs         = ls;
+							hitSegIdx     = ls.points.length - 1;
+							hitPos        = segPoint.clone();
+						}
+					}
 				}
 			}
 		}
@@ -983,6 +1014,8 @@ export class DrawLineStringTool extends EventDispatcher {
 		linestring.color = new THREE.Color(args.color || 0x00ff00);
 		linestring.name = args.name || 'LineString';
 		linestring._wayTags = args.wayTags ? {...args.wayTags} : {};
+		linestring.closed   = !!args.closed;
+		if (args.showFill === false) linestring.showFill = false;
 
 		this.dispatchEvent({
 			type: 'start_inserting_linestring',

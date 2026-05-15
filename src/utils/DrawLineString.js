@@ -35,6 +35,7 @@ export class DrawLineString extends THREE.Object3D {
 		this.name = 'LineString_' + this.constructor.counter;
 		this.points = [];
 		this.closed = false;
+		this.showFill = true;
 		this.color = new THREE.Color(0x00ff00);
 		this.selectedNodeIndex = -1;
 		this._hoveredNodeIndex = -1;
@@ -72,6 +73,9 @@ export class DrawLineString extends THREE.Object3D {
 		// Highlight overlay for selected edges (orange Line2 pair, created lazily)
 		this._highlightEdgeLine    = null;
 		this._highlightEdgeOutline = null;
+
+		// Transparent fill mesh for closed polygons (created lazily)
+		this._fillMesh = null;
 	}
 
 	// ─── bounding box ────────────────────────────────────────────────────────
@@ -160,6 +164,19 @@ export class DrawLineString extends THREE.Object3D {
 		);
 		this._highlightEdgeLine.visible = false;
 		this.add(this._highlightEdgeLine);
+	}
+
+	_ensureFillMesh () {
+		if (this._fillMesh) return;
+		const mat = new THREE.MeshBasicMaterial({
+			transparent: true,
+			opacity: 0.25,
+			depthWrite: false,
+			side: THREE.DoubleSide,
+		});
+		this._fillMesh = new THREE.Mesh(new THREE.BufferGeometry(), mat);
+		this._fillMesh.visible = false;
+		this.add(this._fillMesh);
 	}
 
 	// ─── InstancedMesh management ─────────────────────────────────────────────
@@ -407,6 +424,10 @@ export class DrawLineString extends THREE.Object3D {
 		const lineHighlighted = this._selected && this.selectedNodeIndex < 0;
 		this._lineEdge.material.color.set(lineHighlighted ? 0xff0000 : this.color.getHex());
 		this._lineOutline.material.color.set(lineHighlighted ? 0x440000 : 0x111111);
+		if (this._fillMesh) {
+			this._fillMesh.material.color.set(lineHighlighted ? 0xff0000 : this.color.getHex());
+			this._fillMesh.material.opacity = lineHighlighted ? 0.35 : 0.25;
+		}
 	}
 
 	// ─── marker add / remove / insert ─────────────────────────────────────────
@@ -434,10 +455,13 @@ export class DrawLineString extends THREE.Object3D {
 	}
 
 	insertMarkerAfter (index, position) {
-		if (index < 0 || index >= this.points.length - 1) return;
+		const maxIdx = this.closed ? this.points.length - 1 : this.points.length - 2;
+		if (index < 0 || index > maxIdx) return;
 
 		let p0 = this.points[index].position;
-		let p1 = this.points[index + 1].position;
+		let p1 = (this.closed && index === this.points.length - 1)
+			? this.points[0].position
+			: this.points[index + 1].position;
 		let insertPos = (position != null)
 			? position.clone()
 			: p0.clone().add(p1).multiplyScalar(0.5);
@@ -703,6 +727,26 @@ export class DrawLineString extends THREE.Object3D {
 			this._lineOutline.visible = false;
 		}
 
+		// ── Polygon fill ─────────────────────────────────────────────────────
+		if (this.closed && committedEnd >= 3 && this.showFill) {
+			this._ensureFillMesh();
+			let avgZ = 0;
+			for (let i = 0; i < committedEnd; i++) avgZ += this.points[i].position.z;
+			avgZ /= committedEnd;
+			const shape = new THREE.Shape();
+			shape.moveTo(this.points[0].position.x, this.points[0].position.y);
+			for (let i = 1; i < committedEnd; i++) {
+				shape.lineTo(this.points[i].position.x, this.points[i].position.y);
+			}
+			this._fillMesh.geometry.dispose();
+			this._fillMesh.geometry = new THREE.ShapeGeometry(shape);
+			this._fillMesh.position.z = avgZ;
+			this._fillMesh.material.color.set(this.color.getHex());
+			this._fillMesh.visible = true;
+		} else if (this._fillMesh) {
+			this._fillMesh.visible = false;
+		}
+
 		// ── Selected edge highlight ───────────────────────────────────────────
 		const selectedEdges = this.getSelectedEdges();
 		if (selectedEdges.length > 0) {
@@ -758,23 +802,21 @@ export class DrawLineString extends THREE.Object3D {
 	dispose () {
 		// Release unique GPU resources. Shared geometry/material (_nodeGeometry,
 		// _nodeMaterial) must NOT be disposed here — they are reused by every instance.
+		if (this._fillMesh) {
+			this._fillMesh.geometry.dispose();
+			this._fillMesh.material.dispose();
+		}
 		for (let obj of [this._lineEdge, this._lineOutline, this._ghostLine, this._highlightEdgeLine, this._highlightEdgeOutline]) {
 			if (!obj) continue;
 			obj.geometry.dispose();
 			obj.material.dispose();
-		}
-		// Null out instance-buffer attributes so the renderer's WeakMap entries
-		// for instanceMatrix / instanceColor can be collected.
-		if (this._nodesMesh) {
-			this._nodesMesh.instanceMatrix = null;
-			this._nodesMesh.instanceColor  = null;
 		}
 	}
 
 	// ─── raycasting ──────────────────────────────────────────────────────────
 
 	raycast (raycaster, intersects) {
-		if (this._nodesMesh && this._nodesMesh.visible) {
+		if (this._nodesMesh && this._nodesMesh.visible && this._nodesMesh.instanceMatrix) {
 			this._nodesMesh.raycast(raycaster, intersects);
 		}
 	}
