@@ -21,6 +21,7 @@ export class DrawLineStringTool extends EventDispatcher {
 		this._insertingLinestring = null;
 		this._undoStack = [];
 		this._redoStack = [];
+		this._selectedLinestrings = new Set(); // Ctrl+A multi-linestring selection
 		this._lsListeners         = new Map();
 		this._dragSnapshots       = new Map();
 		this._snapHighlightedEndpoint = null; // DrawLineString | null — highlighted snap target
@@ -197,31 +198,80 @@ export class DrawLineStringTool extends EventDispatcher {
 					}
 				}
 			} else if (e.key === 'Delete') {
+				// Priority 1: delete all multi-selected nodes (if enough remain)
+				let handledMulti = false;
 				for (let ls of this.viewer.scene.drawLineStrings) {
-					if (ls.selectedNodeIndex >= 0) {
-						let before = this._snapshotPoints(ls);
-						ls.deleteSelectedNode();
-						this._pushHistory(ls, before);
+					if (ls.selectedNodeIndices.size > 0) {
+						let indices = Array.from(ls.selectedNodeIndices).sort((a, b) => b - a);
+						let wouldLeave = ls.points.length - indices.length;
+						if (wouldLeave >= 2) {
+							let before = this._snapshotPoints(ls);
+							for (let idx of indices) ls.removeMarker(idx);
+							ls.clearMultiNodeSelection();
+							this._pushHistory(ls, before);
+						}
+						handledMulti = true;
 						break;
 					}
 				}
+				if (!handledMulti) {
+					for (let ls of this.viewer.scene.drawLineStrings) {
+						if (ls.selectedNodeIndex >= 0) {
+							let before = this._snapshotPoints(ls);
+							ls.deleteSelectedNode();
+							this._pushHistory(ls, before);
+							break;
+						}
+					}
+				}
 			} else if (e.key === 'Escape') {
+				// Priority 1: clear multi-node selection
+				let clearedMultiNode = false;
+				for (let ls of this.viewer.scene.drawLineStrings) {
+					if (ls.selectedNodeIndices.size > 0) {
+						ls.clearMultiNodeSelection();
+						clearedMultiNode = true;
+					}
+				}
+				if (clearedMultiNode) return;
+
+				// Priority 2: clear single-node selection
 				let deselectedNode = false;
 				for (let ls of this.viewer.scene.drawLineStrings) {
 					if (ls.selectedNodeIndex >= 0) {
 						ls.selectNode(-1);
 						deselectedNode = true;
-						break;
 					}
 				}
-				if (!deselectedNode) {
-					for (let ls of this.viewer.scene.drawLineStrings) {
-						if (ls._selected) {
-							ls._selected = false;
-							ls.applyHighlight();
-						}
+				if (deselectedNode) return;
+
+				// Priority 3: clear whole-line + multi-linestring selections
+				for (let ls of this.viewer.scene.drawLineStrings) {
+					if (ls._selected) {
+						ls._selected = false;
+						ls.applyHighlight();
 					}
-					this.viewer.dispatchEvent({ type: 'linestring_selected_in_3d', linestring: null });
+				}
+				if (this._selectedLinestrings.size > 0) {
+					this._selectedLinestrings.clear();
+					this.viewer.dispatchEvent({ type: 'linestrings_multi_selected', linestrings: [] });
+				}
+				this.viewer.dispatchEvent({ type: 'linestring_selected_in_3d', linestring: null });
+			} else if (e.ctrlKey && e.key === 'a') {
+				e.preventDefault();
+				this._selectedLinestrings.clear();
+				for (let ls of this.viewer.scene.drawLineStrings) {
+					if (ls._inToolScene) {
+						ls._selected = true;
+						this._selectedLinestrings.add(ls);
+						ls.applyHighlight();
+					}
+				}
+				if (this._selectedLinestrings.size > 0) {
+					this.viewer.dispatchEvent({
+						type: 'linestrings_multi_selected',
+						linestrings: Array.from(this._selectedLinestrings),
+					});
 				}
 			} else if (e.key === 'Insert') {
 				for (let ls of this.viewer.scene.drawLineStrings) {
@@ -241,6 +291,43 @@ export class DrawLineStringTool extends EventDispatcher {
 					}
 				}
 			} else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+				// Priority 0: move all nodes in a multi-node (edge) selection
+				let handledByMulti = false;
+				for (let ls of this.viewer.scene.drawLineStrings) {
+					if (ls.selectedNodeIndices.size === 0) continue;
+					e.preventDefault();
+
+					let camera = this.viewer.scene.getActiveCamera();
+					let center = ls.getBoundingBox().getCenter(new THREE.Vector3());
+					let step = camera.position.distanceTo(center) * 0.005;
+					if (e.shiftKey) step *= 10;
+
+					let right = new THREE.Vector3();
+					let up    = new THREE.Vector3();
+					camera.matrixWorld.extractBasis(right, up, new THREE.Vector3());
+					right.z = 0; if (right.length() > 0.001) right.normalize(); else right.set(1, 0, 0);
+					up.z    = 0; if (up.length()    > 0.001) up.normalize();    else up.set(0, 1, 0);
+
+					let delta = new THREE.Vector3();
+					if (e.key === 'ArrowLeft')  delta.addScaledVector(right, -step);
+					if (e.key === 'ArrowRight') delta.addScaledVector(right,  step);
+					if (e.key === 'ArrowUp')    delta.addScaledVector(up,     step);
+					if (e.key === 'ArrowDown')  delta.addScaledVector(up,    -step);
+
+					let before = this._snapshotPoints(ls);
+					for (let idx of ls.selectedNodeIndices) {
+						ls.points[idx].position.add(delta);
+					}
+					ls._boundingBoxDirty = true;
+					ls._geometryDirty    = true;
+					ls.update();
+					this._pushHistory(ls, before);
+					ls.dispatchEvent({ type: 'markers_all_moved', measurement: ls });
+					handledByMulti = true;
+					break;
+				}
+				if (handledByMulti) return;
+
 				// Priority 1: move a selected individual node
 				let handledByNode = false;
 				for (let ls of this.viewer.scene.drawLineStrings) {
@@ -313,7 +400,7 @@ export class DrawLineStringTool extends EventDispatcher {
 		};
 		document.addEventListener('keydown', this._onKeyDown);
 
-		// Ctrl + left-click to select a node, bypassing Potree's inputHandler
+		// Ctrl+click on a node: toggle it in the multi-node selection for that linestring.
 		this._onDblClick = (e) => {
 			if (!e.ctrlKey || e.button !== 0) return;
 
@@ -348,11 +435,45 @@ export class DrawLineStringTool extends EventDispatcher {
 			}
 
 			if (hitLs) {
-				// deselect nodes on other linestrings
+				// Clear single-node / multi-node selections on all OTHER linestrings
 				for (let ls of this.viewer.scene.drawLineStrings) {
-					if (ls !== hitLs) ls.selectNode(-1);
+					if (ls !== hitLs) {
+						ls.selectNode(-1);
+						ls.clearMultiNodeSelection();
+					}
 				}
-				hitLs.selectNode(hitIdx);
+				// Toggle the clicked node in the multi-node selection
+				hitLs.selectedNodeIndex = -1;
+				hitLs._selected = false;
+				hitLs.toggleNodeInSelection(hitIdx);
+				// Show/refresh the inline panel so way tags are editable
+				this.viewer.dispatchEvent({ type: 'linestring_selected_in_3d', linestring: hitLs });
+			} else {
+				// No node hit — Ctrl+click on a line body toggles linestring in multi-selection
+				let lineHit = this._findLineSegmentHit(e.clientX, e.clientY, 12);
+				if (lineHit) {
+					let ls = lineHit.ls;
+					ls.clearMultiNodeSelection();
+					ls.selectNode(-1);
+					for (let other of this.viewer.scene.drawLineStrings) {
+						if (other._selected && !this._selectedLinestrings.has(other)) {
+							this._selectedLinestrings.add(other);
+						}
+					}
+					if (this._selectedLinestrings.has(ls)) {
+						this._selectedLinestrings.delete(ls);
+						ls._selected = false;
+						ls.applyHighlight();
+					} else {
+						this._selectedLinestrings.add(ls);
+						ls._selected = true;
+						ls.applyHighlight();
+					}
+					this.viewer.dispatchEvent({
+						type: 'linestrings_multi_selected',
+						linestrings: Array.from(this._selectedLinestrings),
+					});
+				}
 			}
 		};
 		this.viewer.renderer.domElement.addEventListener('click', this._onDblClick);
@@ -404,6 +525,18 @@ export class DrawLineStringTool extends EventDispatcher {
 				ls.applyHighlight();
 			}
 
+			// Clear multi-linestring selection on any plain click
+			if (this._selectedLinestrings.size > 0) {
+				for (let ls of this._selectedLinestrings) {
+					if (!hit || ls !== hit.ls) {
+						ls._selected = false;
+						ls.applyHighlight();
+					}
+				}
+				this._selectedLinestrings.clear();
+				this.viewer.dispatchEvent({ type: 'linestrings_multi_selected', linestrings: [] });
+			}
+
 			if (changed || hit) {
 				this.viewer.dispatchEvent({
 					type: 'linestring_selected_in_3d',
@@ -423,16 +556,32 @@ export class DrawLineStringTool extends EventDispatcher {
 			if (e.button !== 0 || e.ctrlKey || e.shiftKey) return;
 			if (this._insertingLinestring) return;
 
-			// Require a selected line with no individual node selected
-			let selectedLs = null;
-			for (let ls of this.viewer.scene.drawLineStrings) {
-				if (ls._selected && ls.selectedNodeIndex < 0) { selectedLs = ls; break; }
-			}
-			if (!selectedLs) return;
-
-			// Only engage if the cursor is actually over the selected line
+			// Check if cursor is over a segment whose both endpoints are multi-selected
+			// — if so, drag only the selected nodes (edge drag).
 			let hit = this._findLineSegmentHit(e.clientX, e.clientY, 12);
-			if (!hit || hit.ls !== selectedLs) return;
+			let activeLs    = null;
+			let nodeIndices = null; // null = move all points
+
+			if (hit && hit.ls.selectedNodeIndices &&
+				hit.ls.selectedNodeIndices.has(hit.segIdx) &&
+				hit.ls.selectedNodeIndices.has(hit.segIdx + 1)) {
+				activeLs    = hit.ls;
+				nodeIndices = Array.from(hit.ls.selectedNodeIndices);
+			}
+
+			if (!activeLs) {
+				// Fall back to whole-line drag: require a selected line with no individual node selected
+				for (let ls of this.viewer.scene.drawLineStrings) {
+					if (ls._selected && ls.selectedNodeIndex < 0 &&
+						(!ls.selectedNodeIndices || ls.selectedNodeIndices.size === 0)) {
+						activeLs = ls; break;
+					}
+				}
+				if (!activeLs) return;
+
+				// Only engage if the cursor is actually over the selected line
+				if (!hit || hit.ls !== activeLs) return;
+			}
 
 			let rect    = this.viewer.renderer.domElement.getBoundingClientRect();
 			let camera  = this.viewer.scene.getActiveCamera();
@@ -448,25 +597,53 @@ export class DrawLineStringTool extends EventDispatcher {
 			raycaster.setFromCamera(nmouse, camera);
 
 			// Horizontal plane at centroid Z for consistent XYZ translation
-			let planeZ    = selectedLs.getBoundingBox().getCenter(new THREE.Vector3()).z;
+			let planeZ    = activeLs.getBoundingBox().getCenter(new THREE.Vector3()).z;
 			let dragPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -planeZ);
 			let startWorld = new THREE.Vector3();
 			if (!raycaster.ray.intersectPlane(dragPlane, startWorld)) return;
 
+			// For edge drag: pin the selected endpoint farther from the drag-start,
+			// then compute per-node arc-length weights (1.0 at the free end → 0.0 at
+			// the anchor) so every node stays on the straight line free↔anchor.
+			let anchorIdx  = null;
+			let edgeParams = null;
+			if (nodeIndices) {
+				nodeIndices  = nodeIndices.slice().sort((a, b) => a - b);
+				let firstIdx = nodeIndices[0];
+				let lastIdx  = nodeIndices[nodeIndices.length - 1];
+				let dFirst   = activeLs.points[firstIdx].position.distanceTo(startWorld);
+				let dLast    = activeLs.points[lastIdx].position.distanceTo(startWorld);
+				anchorIdx    = dFirst > dLast ? firstIdx : lastIdx;
+
+				let anchorIsLast = (anchorIdx === lastIdx);
+				let cumLen = [0];
+				for (let k = 1; k < nodeIndices.length; k++) {
+					cumLen.push(cumLen[k - 1] + activeLs.points[nodeIndices[k - 1]].position
+						.distanceTo(activeLs.points[nodeIndices[k]].position));
+				}
+				let totalLen = cumLen[cumLen.length - 1] || 1;
+				// weight = 1 at free end, 0 at anchor → each node slides a proportional fraction
+				edgeParams = nodeIndices.map((idx, k) => {
+					let t = cumLen[k] / totalLen;
+					return { idx, weight: anchorIsLast ? (1 - t) : t };
+				});
+			}
+
 			this._lineDragPending = {
-				ls:             selectedLs,
+				ls:             activeLs,
 				startScreenX:   e.clientX,
 				startScreenY:   e.clientY,
 				startWorld,
 				dragPlane,
-				before:         this._snapshotPoints(selectedLs),
-				startPositions: selectedLs.points.map(p => p.position.clone()),
+				before:         this._snapshotPoints(activeLs),
+				startPositions: activeLs.points.map(p => p.position.clone()),
+				edgeParams,     // null = whole-line drag; array = per-node weighted drag
 			};
 
 			// Use document-level handlers so the drag works even if the cursor
 			// leaves the canvas mid-move.
 			const onMove = (me) => {
-				let { ls, startScreenX, startScreenY, startWorld, dragPlane, startPositions } = this._lineDragPending;
+				let { ls, startScreenX, startScreenY, startWorld, dragPlane, startPositions, edgeParams } = this._lineDragPending;
 
 				let dx = me.clientX - startScreenX;
 				let dy = me.clientY - startScreenY;
@@ -502,9 +679,18 @@ export class DrawLineStringTool extends EventDispatcher {
 
 				let delta = newWorld.clone().sub(startWorld);
 
-				// Move all points directly — suppress per-point rebuilds during drag
-				for (let i = 0; i < ls.points.length; i++) {
-					ls.points[i].position.copy(startPositions[i]).add(delta);
+				if (edgeParams) {
+					// Edge drag: redistribute selected nodes along the straight line
+					// from the free endpoint (weight=1, full delta) to the anchor (weight=0).
+					for (let { idx, weight } of edgeParams) {
+						ls.points[idx].position.copy(startPositions[idx])
+							.addScaledVector(delta, weight);
+					}
+				} else {
+					// Whole-line drag: every point moves by the same delta.
+					for (let i = 0; i < ls.points.length; i++) {
+						ls.points[i].position.copy(startPositions[i]).add(delta);
+					}
 				}
 				ls._boundingBoxDirty = true;
 				ls._geometryDirty    = true;
@@ -789,7 +975,7 @@ export class DrawLineStringTool extends EventDispatcher {
 		let linestring = new DrawLineString();
 		linestring.color = new THREE.Color(args.color || 0x00ff00);
 		linestring.name = args.name || 'LineString';
-		linestring._wayTags = { cost_factor: '1.000000', speed_limit: '10' };
+		linestring._wayTags = args.wayTags ? {...args.wayTags} : { cost_factor: '1.000000', speed_limit: '10' };
 
 		this.dispatchEvent({
 			type: 'start_inserting_linestring',
@@ -994,6 +1180,10 @@ export class DrawLineStringTool extends EventDispatcher {
 				ls._lineEdge.material.resolution.set(clientWidth, clientHeight);
 				ls._lineOutline.material.resolution.set(clientWidth, clientHeight);
 				if (ls._ghostLine) ls._ghostLine.material.resolution.set(clientWidth, clientHeight);
+				if (ls._highlightEdgeLine) {
+					ls._highlightEdgeLine.material.resolution.set(clientWidth, clientHeight);
+					ls._highlightEdgeOutline.material.resolution.set(clientWidth, clientHeight);
+				}
 			}
 		}
 	}

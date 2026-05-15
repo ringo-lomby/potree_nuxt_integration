@@ -9,6 +9,12 @@ import {LineMaterial} from "../../libs/three.js/lines/LineMaterial.js";
 let _sharedNodeGeometry = null;
 let _sharedNodeMaterial = null;
 
+// Track Ctrl key state so InstancedMesh click can yield to the Ctrl+click
+// multi-node handler in DrawLineStringTool without race conditions.
+let _ctrlDown = false;
+document.addEventListener('keydown', (e) => { if (e.key === 'Control') _ctrlDown = true; });
+document.addEventListener('keyup',   (e) => { if (e.key === 'Control') _ctrlDown = false; });
+
 function getSharedNodeGeometry () {
 	if (!_sharedNodeGeometry) _sharedNodeGeometry = new THREE.SphereGeometry(0.4, 6, 6);
 	return _sharedNodeGeometry;
@@ -56,6 +62,14 @@ export class DrawLineString extends THREE.Object3D {
 
 		// Set true during bulk loads to skip intermediate geometry rebuilds.
 		this._suppressUpdates = false;
+
+		// Multi-node selection (Ctrl+click accumulates nodes; adjacent pairs define edges)
+		this.selectedNodeIndices = new Set();
+		this._multiDragStartPositions = null;
+
+		// Highlight overlay for selected edges (orange Line2 pair, created lazily)
+		this._highlightEdgeLine    = null;
+		this._highlightEdgeOutline = null;
 	}
 
 	// ─── bounding box ────────────────────────────────────────────────────────
@@ -118,6 +132,34 @@ export class DrawLineString extends THREE.Object3D {
 		this.add(this._ghostLine);
 	}
 
+	_ensureHighlightEdgeLine () {
+		if (this._highlightEdgeLine) return;
+
+		this._highlightEdgeOutline = new Line2(
+			new LineGeometry(),
+			new LineMaterial({
+				color: 0x440000,
+				linewidth: 5,
+				resolution: new THREE.Vector2(1000, 1000),
+				depthTest: true,
+			})
+		);
+		this._highlightEdgeOutline.visible = false;
+		this.add(this._highlightEdgeOutline);
+
+		this._highlightEdgeLine = new Line2(
+			new LineGeometry(),
+			new LineMaterial({
+				color: 0xff0000,
+				linewidth: 3,
+				resolution: new THREE.Vector2(1000, 1000),
+				depthTest: true,
+			})
+		);
+		this._highlightEdgeLine.visible = false;
+		this.add(this._highlightEdgeLine);
+	}
+
 	// ─── InstancedMesh management ─────────────────────────────────────────────
 
 	_ensureNodeCapacity (count) {
@@ -177,12 +219,35 @@ export class DrawLineString extends THREE.Object3D {
 				-(mouse.y / renderAreaSize.height) *  2 + 1
 			);
 
+			// Helper: apply newPos to node i, or to all multi-selected nodes by same delta
+			const applyMove = (newPos) => {
+				if (this.selectedNodeIndices.has(i) && this.selectedNodeIndices.size > 1) {
+					if (!this._multiDragStartPositions) {
+						this._multiDragStartPositions = new Map();
+						for (let idx of this.selectedNodeIndices) {
+							if (idx < this.points.length)
+								this._multiDragStartPositions.set(idx, this.points[idx].position.clone());
+						}
+					}
+					let startPos = this._multiDragStartPositions.get(i);
+					if (startPos) {
+						let delta = newPos.clone().sub(startPos);
+						for (let idx of this.selectedNodeIndices) {
+							let sp = this._multiDragStartPositions.get(idx);
+							if (sp) this.setPosition(idx, sp.clone().add(delta));
+						}
+					}
+				} else {
+					this.setPosition(i, newPos);
+				}
+			};
+
 			let I = Utils.getMousePointCloudIntersection(
 				mouse, camera, e.viewer, e.viewer.scene.pointclouds,
 				{pickClipped: true});
 
 			if (I) {
-				this.setPosition(i, I.location);
+				applyMove(I.location);
 			} else {
 				let currentZ = this.points[i].position.z;
 				let plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), -currentZ);
@@ -190,13 +255,14 @@ export class DrawLineString extends THREE.Object3D {
 				raycaster.setFromCamera(nmouse, camera);
 				let hit = new THREE.Vector3();
 				if (raycaster.ray.intersectPlane(plane, hit)) {
-					this.setPosition(i, hit);
+					applyMove(hit);
 				}
 			}
 		});
 
 		mesh.addEventListener('drop', (e) => {
 			dragging = false;
+			this._multiDragStartPositions = null;
 			let i = e.drag != null ? e.drag.instanceId : null;
 			if (i != null && i >= 0 && i < this.points.length) {
 				this.dispatchEvent({
@@ -221,6 +287,8 @@ export class DrawLineString extends THREE.Object3D {
 		});
 
 		mesh.addEventListener('click', (e) => {
+			// Ctrl+click is handled by DrawLineStringTool's multi-node toggle; skip here.
+			if (_ctrlDown) return;
 			let i = e.instanceId;
 			if (i != null && i >= 0 && i < this.points.length) {
 				this.selectNode(i === this.selectedNodeIndex ? -1 : i);
@@ -232,8 +300,11 @@ export class DrawLineString extends THREE.Object3D {
 
 	selectNode (index) {
 		this.selectedNodeIndex = index;
-		// Selecting a node clears whole-line selection so the two modes are exclusive.
-		if (index >= 0) this._selected = false;
+		// Selecting a single node clears both whole-line and multi-node selection.
+		if (index >= 0) {
+			this._selected = false;
+			if (this.selectedNodeIndices.size > 0) this.selectedNodeIndices.clear();
+		}
 		this.applyHighlight();
 
 		this.dispatchEvent({
@@ -241,6 +312,45 @@ export class DrawLineString extends THREE.Object3D {
 			measurement: this,
 			index: index
 		});
+	}
+
+	// Toggle a node in/out of the multi-node selection.
+	// Clears single-node selection (selectedNodeIndex) when any multi-node entry exists.
+	toggleNodeInSelection (index) {
+		if (this.selectedNodeIndices.has(index)) {
+			this.selectedNodeIndices.delete(index);
+		} else {
+			this.selectedNodeIndices.add(index);
+		}
+		if (this.selectedNodeIndices.size > 0) {
+			this.selectedNodeIndex = -1;
+			this._selected = false;
+		}
+		this._geometryDirty = true;
+		this.update();
+		this.applyHighlight();
+		this.dispatchEvent({ type: 'node_selected', measurement: this, index: -1 });
+	}
+
+	clearMultiNodeSelection () {
+		if (this.selectedNodeIndices.size === 0) return;
+		this.selectedNodeIndices.clear();
+		// Force geometry rebuild so the edge highlight line is hidden immediately.
+		this._geometryDirty = true;
+		this.update();
+		this.applyHighlight();
+		this.dispatchEvent({ type: 'node_selected', measurement: this, index: -1 });
+	}
+
+	// Returns array of [i, i+1] pairs where both i and i+1 are in selectedNodeIndices.
+	getSelectedEdges () {
+		let edges = [];
+		for (let i = 0; i < this.points.length - 1; i++) {
+			if (this.selectedNodeIndices.has(i) && this.selectedNodeIndices.has(i + 1)) {
+				edges.push([i, i + 1]);
+			}
+		}
+		return edges;
 	}
 
 	deleteSelectedNode () {
@@ -267,6 +377,8 @@ export class DrawLineString extends THREE.Object3D {
 			let isEndpoint = (i === 0 || i === this.points.length - 1);
 			if (i === this.selectedNodeIndex && i !== this.ghostIndex) {
 				this._nodeColor.set(0xff0000);
+			} else if (this.selectedNodeIndices.has(i) && i !== this.ghostIndex) {
+				this._nodeColor.set(0xff0000); // red — multi-node selected (same as single)
 			} else if (this._snapHighlighted && isEndpoint) {
 				this._nodeColor.set(0x00ffff); // cyan — snap target
 			} else if (i === this._hoveredNodeIndex && i !== this.selectedNodeIndex) {
@@ -583,6 +695,36 @@ export class DrawLineString extends THREE.Object3D {
 			this._lineOutline.visible = false;
 		}
 
+		// ── Selected edge highlight ───────────────────────────────────────────
+		const selectedEdges = this.getSelectedEdges();
+		if (selectedEdges.length > 0) {
+			// Collect positions for all selected edge segments
+			const edgePts = [];
+			for (let [a, b] of selectedEdges) {
+				if (a < committedEnd && b < committedEnd) {
+					const pa = this.points[a].position;
+					const pb = this.points[b].position;
+					edgePts.push(pa.x, pa.y, pa.z, pb.x, pb.y, pb.z);
+				}
+			}
+			if (edgePts.length >= 6) {
+				this._ensureHighlightEdgeLine();
+				const ePos = new Float32Array(edgePts);
+				this._highlightEdgeLine.geometry.setPositions(ePos);
+				delete this._highlightEdgeLine.geometry._maxInstanceCount;
+				this._highlightEdgeLine.computeLineDistances();
+				this._highlightEdgeLine.visible = true;
+
+				this._highlightEdgeOutline.geometry.setPositions(ePos);
+				delete this._highlightEdgeOutline.geometry._maxInstanceCount;
+				this._highlightEdgeOutline.computeLineDistances();
+				this._highlightEdgeOutline.visible = true;
+			}
+		} else if (this._highlightEdgeLine) {
+			this._highlightEdgeLine.visible    = false;
+			this._highlightEdgeOutline.visible = false;
+		}
+
 		// ── Ghost preview segment ─────────────────────────────────────────────
 		if (hasGhost && ghostIdx > 0) {
 			const p0 = this.points[ghostIdx - 1].position;
@@ -608,7 +750,7 @@ export class DrawLineString extends THREE.Object3D {
 	dispose () {
 		// Release unique GPU resources. Shared geometry/material (_nodeGeometry,
 		// _nodeMaterial) must NOT be disposed here — they are reused by every instance.
-		for (let obj of [this._lineEdge, this._lineOutline, this._ghostLine]) {
+		for (let obj of [this._lineEdge, this._lineOutline, this._ghostLine, this._highlightEdgeLine, this._highlightEdgeOutline]) {
 			if (!obj) continue;
 			obj.geometry.dispose();
 			obj.material.dispose();

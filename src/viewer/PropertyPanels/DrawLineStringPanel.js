@@ -211,11 +211,48 @@ export class DrawLineStringPanel extends MeasurePanel{
 	_buildNodeTagEditor() {
 		let elContainer = this.elContent.find('.node_tags_container');
 		elContainer.empty();
+
+		// Multi-node selection takes priority over single-node
+		let multiIndices = Array.from(this.measurement.selectedNodeIndices).sort((a, b) => a - b);
+		if (multiIndices.length > 0) {
+			this._buildMultiNodeInfo(elContainer, multiIndices);
+			return;
+		}
+
 		let si = this.measurement.selectedNodeIndex;
 		if (si >= 0 && si < this.measurement.points.length) {
 			elContainer.append(this._buildSplitButton(si));
 			elContainer.append(this._buildTagEditor(this.measurement.points[si], si));
 		}
+	}
+
+	_buildMultiNodeInfo(elContainer, indices) {
+		let edges = this.measurement.getSelectedEdges();
+
+		let container = $(`<div style="margin-top: 10px; border-top: 1px solid #444; padding-top: 10px"></div>`);
+		container.append($(`<div style="font-size: 11px; color: #999; margin-bottom: 4px">${indices.length} node${indices.length > 1 ? 's' : ''} selected (${indices.map(i => i + 1).join(', ')})</div>`));
+
+		if (edges.length > 0) {
+			let edgeStr = edges.map(([a, b]) => `${a + 1}→${b + 1}`).join(', ');
+			container.append($(`<div style="font-size: 10px; color: #ff8800; margin-bottom: 6px">Edge${edges.length > 1 ? 's' : ''}: ${edgeStr} — way tags apply to the whole linestring</div>`));
+		} else {
+			container.append($(`<div style="font-size: 10px; color: #888; margin-bottom: 6px">Drag any selected node to move all together</div>`));
+		}
+
+		let clearBtn = $(`
+			<button style="width:100%; padding:4px 0; font-size:11px; background:#2a2a2a; color:#ccc; border:1px solid #555; cursor:pointer; border-radius:3px; margin-top:4px">
+				Clear node selection
+			</button>
+		`);
+		clearBtn.click(() => this.measurement.clearMultiNodeSelection());
+		container.append(clearBtn);
+
+		elContainer.append(container);
+	}
+
+	_refreshTagEditors () {
+		this._buildWayTags();
+		this._buildNodeTagEditor();
 	}
 
 	_buildSplitButton(nodeIndex) {

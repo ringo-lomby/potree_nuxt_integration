@@ -771,3 +771,86 @@ body {
   padding-top: 0.6em;
   padding-bottom: 0.1em;
 }
+
+/* Tag preset list */
+.preset-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: #ccc;
+  user-select: none;
+}
+.preset-item:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+.preset-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+.preset-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preset-btn {
+  padding: 1px 5px;
+  font-size: 10px;
+  cursor: pointer;
+  border: 1px solid #555;
+  border-radius: 2px;
+  background: #2a2a2a;
+  color: #bbb;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.preset-btn:hover {
+  background: #3a3a3a;
+}
+.preset-btn-icon {
+  padding: 1px 4px;
+}
+.preset-btn-delete:hover {
+  background: #3a1a1a;
+  color: #f88;
+  border-color: #744;
+}
+.preset-add-btn {
+  cursor: pointer;
+  color: #7af;
+  font-size: 12px;
+  padding: 2px 0;
+  user-select: none;
+}
+.preset-add-btn:hover {
+  color: #aef;
+}
+/* Preset type badges (W / N) */
+.preset-type-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  font-weight: bold;
+  letter-spacing: 0.3px;
+}
+.preset-type-way  { background: #1a3a4a; color: #7cf; border: 1px solid #2a5a6a; }
+.preset-type-node { background: #3a2a1a; color: #fc7; border: 1px solid #6a4a2a; }
+/* Type toggle buttons in preset editor */
+.preset-type-btn {
+  padding: 2px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  border: 1px solid #444;
+  background: #1a1a1a;
+  color: #666;
+  border-radius: 2px;
+  flex: 1;
+}
+.preset-type-btn.active           { background: #1a3a4a; color: #8cf; border-color: #3a6a8a; }
+.preset-type-btn-node.active      { background: #3a2a1a; color: #fc8; border-color: #6a4a2a; }

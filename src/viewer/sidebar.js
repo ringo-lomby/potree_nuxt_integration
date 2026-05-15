@@ -9,6 +9,7 @@ import {Volume, BoxVolume, SphereVolume} from "../utils/Volume.js"
 import {PolygonClipVolume} from "../utils/PolygonClipVolume.js"
 import {PropertiesPanel} from "./PropertyPanels/PropertiesPanel.js"
 import {DrawLineStringPanel} from "./PropertyPanels/DrawLineStringPanel.js"
+import {MultiLineStringPanel} from "./PropertyPanels/MultiLineStringPanel.js"
 import {DrawLineString} from "../utils/DrawLineString.js"
 import {PointCloudTree} from "../PointCloudTree.js"
 import {Profile} from "../utils/Profile.js"
@@ -57,6 +58,7 @@ export class Sidebar{
 		this.initAccordion();
 		this.initAppearance();
 		this.initToolbar();
+		this.initRoadElements();
 		this.initScene();
 		this.initNavigation();
 		this.initFilters();
@@ -363,7 +365,9 @@ export class Sidebar{
 				}
 
 				// Ask the user where to save when an original file is present.
-				let choice = 'existing';
+				// Default to 'new' so that when no file was imported, OSMExporter.toOSM
+				// is used instead of OSMPatcher.patch(undefined, ...) which returns undefined.
+				let choice = 'new';
 				if (this._osmOriginalXml) {
 					choice = await showSaveOSMDialog(this._osmFileName);
 					if (!choice) return; // cancelled
@@ -919,6 +923,271 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 		}
 	}
 
+	initRoadElements () {
+		const STORAGE_KEY = 'potree_tag_presets_v2';
+		const DEFAULTS = [
+			{ name: 'Stop Line',          color: '#ff4444', type: 'way',  wayTags: { type: 'stop_line',         subtype: 'solid'             }, nodeTags: {} },
+			{ name: 'Traffic Light',      color: '#ffcc00', type: 'way',  wayTags: { type: 'traffic_light',      subtype: 'red_yellow_green', height: '0.6' }, nodeTags: {} },
+			{ name: 'Lane Marking',       color: '#aaaaaa', type: 'way',  wayTags: { type: 'line_thin',          subtype: 'solid'             }, nodeTags: {} },
+			{ name: 'Traffic Sign',       color: '#ff8800', type: 'way',  wayTags: { type: 'traffic_sign',       subtype: 'stop_sign'         }, nodeTags: {} },
+			{ name: 'Light Bulbs',        color: '#ffffff', type: 'way',  wayTags: { type: 'light_bulbs',        subtype: 'solid'             }, nodeTags: {} },
+			{ name: 'Detection Area',     color: '#44aaff', type: 'way',  wayTags: { type: 'detection_area',     subtype: 'detection_area'    }, nodeTags: {} },
+			{ name: 'Regulatory Element', color: '#aa44ff', type: 'way',  wayTags: { type: 'regulatory_element'                               }, nodeTags: {} },
+			{ name: 'Guard Rail',         color: '#44ff88', type: 'way',  wayTags: { type: 'guard_rail'                                       }, nodeTags: {} },
+			{ name: 'Goal Point',         color: '#ff44aa', type: 'node', wayTags: {},                                                          nodeTags: { stop_point_type: 'goal_point', color: 'red' } },
+			{ name: 'Custom',             color: '#00ff00', type: 'way',  wayTags: { cost_factor: '1.000000', speed_limit: '10'               }, nodeTags: {} },
+		];
+
+		const inferPresetType = (p) => {
+			if (p.type) return p.type;
+			return (p.nodeTags && Object.keys(p.nodeTags).length > 0) ? 'node' : 'way';
+		};
+		const loadPresets = () => {
+			try {
+				let stored = localStorage.getItem(STORAGE_KEY);
+				if (stored) return JSON.parse(stored).map(p => ({ ...p, type: inferPresetType(p) }));
+			} catch (e) { /* ignore */ }
+			return DEFAULTS.map(p => ({ ...p, id: crypto.randomUUID() }));
+		};
+		const savePresets = (ps) => {
+			try { localStorage.setItem(STORAGE_KEY, JSON.stringify(ps)); } catch (e) { /* ignore */ }
+		};
+
+		let presets = loadPresets();
+
+		const elList            = $('#road_elements_tools');
+		const elAddBtn          = $('#preset_add_btn');
+		const elEditorContainer = $('#preset_editor_container');
+
+		// ── Apply preset to the currently open panel ─────────────────────────
+		const applyPreset = (preset) => {
+			const panel = this._inlinePanelInstance;
+			if (!panel) {
+				this.viewer.postError('Select a linestring or node first.');
+				return;
+			}
+
+			if (panel.measurement) {
+				const ls = panel.measurement;
+				const hasNodeSelection = ls.selectedNodeIndices.size > 0 || ls.selectedNodeIndex >= 0;
+				const presetType = preset.type || 'way';
+
+				if (presetType === 'node') {
+					if (!hasNodeSelection) {
+						this.viewer.postError(`"${preset.name}" is a node preset — Ctrl+click nodes first.`);
+						return;
+					}
+					const indices = new Set(ls.selectedNodeIndices);
+					if (ls.selectedNodeIndex >= 0) indices.add(ls.selectedNodeIndex);
+					for (let i of indices) {
+						if (!ls.points[i]) continue;
+						if (!ls.points[i]._osmNodeTags) ls.points[i]._osmNodeTags = {};
+						Object.assign(ls.points[i]._osmNodeTags, preset.nodeTags);
+					}
+				} else {
+					if (hasNodeSelection) {
+						this.viewer.postError(`"${preset.name}" is a way preset — click the linestring without nodes selected.`);
+						return;
+					}
+					if (!ls._wayTags) ls._wayTags = {};
+					Object.assign(ls._wayTags, preset.wayTags);
+				}
+
+				panel._refreshTagEditors();
+				this.viewer.postMessage(`Preset "${preset.name}" applied`, { duration: 2000 });
+
+			} else if (panel.linestrings) {
+				if ((preset.type || 'way') === 'node') {
+					this.viewer.postError(`"${preset.name}" is a node preset — cannot apply to multi-linestring selection.`);
+					return;
+				}
+				for (let ls of panel.linestrings) {
+					if (!ls._wayTags) ls._wayTags = {};
+					Object.assign(ls._wayTags, preset.wayTags);
+				}
+				this.viewer.postMessage(`Preset "${preset.name}" applied to ${panel.linestrings.length} linestrings`, { duration: 2000 });
+			} else {
+				this.viewer.postError('Select a linestring or node first.');
+			}
+		};
+
+		// ── Tag table builder (shared by preset editor) ──────────────────────
+		const buildTagTable = (tags, label) => {
+			let removeIconPath = Potree.resourcePath + '/icons/remove.svg';
+			let addIconPath    = Potree.resourcePath + '/icons/add.svg';
+
+			const inputStyle = [
+				'width:100%', 'box-sizing:border-box', 'background:#1a1a1a', 'color:#ddd',
+				'border:1px solid #444', 'padding:2px 5px', 'font-size:11px', 'font-family:inherit',
+			].join(';');
+
+			let container = $(`<div style="margin-bottom:8px"></div>`);
+			container.append($(`<div style="font-size:11px; color:#999; margin-bottom:4px">${label}</div>`));
+
+			let table = $(`<table style="width:100%; border-collapse:collapse"></table>`);
+			table.append($(`
+				<tr>
+					<th style="text-align:left; font-size:10px; padding:2px 4px; color:#666; font-weight:normal">Key</th>
+					<th style="text-align:left; font-size:10px; padding:2px 4px; color:#666; font-weight:normal">Value</th>
+					<th style="width:18px"></th>
+				</tr>
+			`));
+			container.append(table);
+
+			const addTagRow = (key, value) => {
+				let row = $(`<tr></tr>`);
+				let keyInput = $(`<input type="text" style="${inputStyle}"/>`).val(key);
+				let valInput = $(`<input type="text" style="${inputStyle}"/>`).val(value);
+				let delBtn   = $(`<img class="button-icon" src="${removeIconPath}" style="width:12px; height:12px; cursor:pointer; opacity:0.55; display:block"/>`);
+				let currentKey = key;
+
+				keyInput.on('blur', () => {
+					let newKey = keyInput.val().trim();
+					if (newKey === currentKey) return;
+					let val = (currentKey in tags) ? tags[currentKey] : valInput.val();
+					if (currentKey) delete tags[currentKey];
+					if (newKey) tags[newKey] = val;
+					currentKey = newKey;
+				});
+				valInput.on('input', () => { if (currentKey) tags[currentKey] = valInput.val(); });
+				keyInput.on('keydown', (e) => { if (e.key === 'Enter') valInput.focus(); });
+				valInput.on('keydown', (e) => { if (e.key === 'Enter') valInput.blur(); });
+				delBtn.click(() => { if (currentKey) delete tags[currentKey]; row.remove(); });
+				delBtn.hover(() => delBtn.css('opacity', '1'), () => delBtn.css('opacity', '0.55'));
+
+				row.append($('<td style="padding:2px 2px; width:42%"></td>').append(keyInput));
+				row.append($('<td style="padding:2px 2px"></td>').append(valInput));
+				row.append($('<td style="padding:2px 2px; vertical-align:middle"></td>').append(delBtn));
+				table.append(row);
+				return row;
+			};
+
+			for (let [k, v] of Object.entries(tags)) addTagRow(k, String(v));
+
+			let addBtn = $(`<div style="margin-top:5px; cursor:pointer; font-size:11px; color:#777; display:inline-flex; align-items:center; gap:4px; user-select:none"></div>`);
+			addBtn.append($(`<img src="${addIconPath}" style="width:11px; height:11px"/>`));
+			addBtn.append($('<span>Add tag</span>'));
+			addBtn.hover(() => addBtn.css('color', '#bbb'), () => addBtn.css('color', '#777'));
+			addBtn.click(() => { let row = addTagRow('', ''); row.find('input').first().focus(); });
+			container.append(addBtn);
+
+			return container;
+		};
+
+		// ── Inline preset editor ─────────────────────────────────────────────
+		const openEditor = (existing = null) => {
+			elEditorContainer.show().empty();
+
+			let currentType = existing ? inferPresetType(existing) : 'way';
+			let editTags = existing
+				? { ...(currentType === 'way' ? existing.wayTags : existing.nodeTags) }
+				: {};
+
+			let editor = $(`<div style="background:#1c1c1c; border:1px solid #444; border-radius:3px; padding:8px; font-size:12px"></div>`);
+			editor.append($(`<div style="color:#aaa; margin-bottom:8px; font-size:11px">${existing ? 'Edit Preset' : 'New Preset'}</div>`));
+
+			let nameRow = $(`<div style="display:flex; gap:6px; margin-bottom:8px; align-items:center"></div>`);
+			let nameInput  = $(`<input type="text" placeholder="Name" style="flex:1; background:#1a1a1a; color:#ddd; border:1px solid #444; padding:3px 6px; font-size:11px; font-family:inherit; border-radius:2px">`).val(existing ? existing.name : '');
+			let colorInput = $(`<input type="color" style="width:28px; height:22px; padding:0; border:1px solid #444; cursor:pointer">`).val(existing ? existing.color : '#888888');
+			nameRow.append(nameInput).append(colorInput);
+			editor.append(nameRow);
+
+			// Type toggle
+			let typeRow = $(`<div style="display:flex; gap:4px; margin-bottom:8px"></div>`);
+			let wayBtn  = $(`<button class="preset-type-btn ${currentType === 'way'  ? 'active' : ''}">Way</button>`);
+			let nodeBtn = $(`<button class="preset-type-btn preset-type-btn-node ${currentType === 'node' ? 'active' : ''}">Node</button>`);
+			typeRow.append(wayBtn).append(nodeBtn);
+			editor.append(typeRow);
+
+			// Single tag table — rebuilt when type changes
+			let tagContainer = $(`<div></div>`);
+			const rebuildTable = () => {
+				tagContainer.empty();
+				tagContainer.append(buildTagTable(editTags, currentType === 'way' ? 'Way Tags' : 'Node Tags'));
+			};
+			rebuildTable();
+			editor.append(tagContainer);
+
+			wayBtn.click(() => {
+				if (currentType === 'way') return;
+				currentType = 'way'; editTags = {};
+				wayBtn.addClass('active'); nodeBtn.removeClass('active');
+				rebuildTable();
+			});
+			nodeBtn.click(() => {
+				if (currentType === 'node') return;
+				currentType = 'node'; editTags = {};
+				nodeBtn.addClass('active'); wayBtn.removeClass('active');
+				rebuildTable();
+			});
+
+			let btnRow  = $(`<div style="display:flex; gap:6px; margin-top:8px"></div>`);
+			let saveBtn = $(`<button style="flex:1; padding:4px; font-size:11px; background:#2a3a2a; color:#8f8; border:1px solid #484; cursor:pointer; border-radius:2px">Save</button>`);
+			let cancelBtn = $(`<button style="flex:1; padding:4px; font-size:11px; background:#2a2a2a; color:#aaa; border:1px solid #555; cursor:pointer; border-radius:2px">Cancel</button>`);
+			btnRow.append(saveBtn).append(cancelBtn);
+			editor.append(btnRow);
+
+			saveBtn.click(() => {
+				let name = nameInput.val().trim();
+				if (!name) { nameInput.css('border-color', '#f44'); return; }
+				nameInput.blur();
+				const wayTags  = currentType === 'way'  ? editTags : {};
+				const nodeTags = currentType === 'node' ? editTags : {};
+				if (existing) {
+					Object.assign(existing, { name, color: colorInput.val(), type: currentType, wayTags, nodeTags });
+				} else {
+					presets.push({ id: crypto.randomUUID(), name, color: colorInput.val(), type: currentType, wayTags, nodeTags });
+				}
+				savePresets(presets);
+				renderList();
+				elEditorContainer.hide().empty();
+			});
+
+			cancelBtn.click(() => elEditorContainer.hide().empty());
+
+			elEditorContainer.append(editor);
+		};
+
+		// ── Render preset list ────────────────────────────────────────────────
+		const renderList = () => {
+			elList.empty();
+			for (let preset of presets) {
+				const pType = preset.type || 'way';
+				const isNode = pType === 'node';
+
+				let item = $(`<div class="preset-item"></div>`);
+				item.append($(`<span class="preset-dot" style="background:${preset.color}"></span>`));
+				item.append($(`<span class="preset-type-badge preset-type-${pType}">${isNode ? 'N' : 'W'}</span>`));
+				item.append($(`<span class="preset-name" title="${preset.name}">${preset.name}</span>`));
+
+				let drawBtn  = $(`<button class="preset-btn" title="Draw new linestring with this preset">Draw</button>`);
+				let applyBtn = $(`<button class="preset-btn" title="Apply tags to selection">Apply</button>`);
+				let editBtn  = $(`<button class="preset-btn preset-btn-icon" title="Edit preset">✎</button>`);
+				let delBtn   = $(`<button class="preset-btn preset-btn-icon preset-btn-delete" title="Delete preset">✕</button>`);
+
+				if (isNode) drawBtn.hide();
+
+				drawBtn.click(() => {
+					let tool = this.viewer._drawLineStringTool;
+					if (tool) tool.startInsertion({ name: preset.name, wayTags: { ...preset.wayTags } });
+				});
+				applyBtn.click(() => applyPreset(preset));
+				editBtn.click(() => openEditor(preset));
+				delBtn.click(() => {
+					presets = presets.filter(p => p.id !== preset.id);
+					savePresets(presets);
+					renderList();
+				});
+
+				item.append(drawBtn).append(applyBtn).append(editBtn).append(delBtn);
+				elList.append(item);
+			}
+		};
+
+		elAddBtn.click(() => openEditor());
+		renderList();
+	}
+
 	initScene(){
 
 		let elScene = $("#menu_scene");
@@ -1013,16 +1282,30 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 		// ── Inline LineString properties panel (Tools > Map section) ─────────
 		let elInlinePanel = $('#linestring_inline_panel');
 		let _inlinePanelContext = null;
-		let _inlinePanelInstance = null;
+		this._inlinePanelInstance = null;
 
 		const showInlinePanel = (ls) => {
+			if (!ls) {
+				if (_inlinePanelContext) {
+					for (let task of _inlinePanelContext.cleanupTasks) task();
+					_inlinePanelContext = null;
+					this._inlinePanelInstance = null;
+				}
+				elInlinePanel.empty();
+				elInlinePanel.hide();
+				return;
+			}
+			// If already showing for the same linestring, just refresh the node tag area
+			if (this._inlinePanelInstance && this._inlinePanelInstance.measurement === ls) {
+				this._inlinePanelInstance._buildNodeTagEditor();
+				return;
+			}
 			if (_inlinePanelContext) {
 				for (let task of _inlinePanelContext.cleanupTasks) task();
 				_inlinePanelContext = null;
-				_inlinePanelInstance = null;
+				this._inlinePanelInstance = null;
 			}
 			elInlinePanel.empty();
-			if (!ls) { elInlinePanel.hide(); return; }
 
 			_inlinePanelContext = {
 				cleanupTasks: [],
@@ -1031,8 +1314,23 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 					this.cleanupTasks.push(() => target.removeEventListener(type, callback));
 				},
 			};
-			_inlinePanelInstance = new DrawLineStringPanel(this.viewer, ls, _inlinePanelContext);
-			elInlinePanel.append(_inlinePanelInstance.elContent);
+			this._inlinePanelInstance = new DrawLineStringPanel(this.viewer, ls, _inlinePanelContext);
+			elInlinePanel.append(this._inlinePanelInstance.elContent);
+			elInlinePanel.show();
+			$('#menu_tools').next().slideDown();
+		};
+		const showMultiInlinePanel = (linestrings) => {
+			if (_inlinePanelContext) {
+				for (let task of _inlinePanelContext.cleanupTasks) task();
+				_inlinePanelContext = null;
+				this._inlinePanelInstance = null;
+			}
+			elInlinePanel.empty();
+			if (!linestrings || linestrings.length === 0) { elInlinePanel.hide(); return; }
+
+			_inlinePanelContext = { cleanupTasks: [] };
+			this._inlinePanelInstance = new MultiLineStringPanel(this.viewer, linestrings, _inlinePanelContext);
+			elInlinePanel.append(this._inlinePanelInstance.elContent);
 			elInlinePanel.show();
 			$('#menu_tools').next().slideDown();
 		};
@@ -1454,9 +1752,17 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 			}
 		});
 
+		this.viewer.addEventListener('linestrings_multi_selected', (e) => {
+			showMultiInlinePanel(e.linestrings);
+			// Clear single-linestring panel / jstree selection when entering multi-select
+			if (e.linestrings && e.linestrings.length > 0) {
+				tree.jstree('deselect_all');
+			}
+		});
+
 		// Hide inline panel when linestring is removed
 		this.viewer.scene.addEventListener("draw_linestring_removed", (e) => {
-			if (_inlinePanelInstance && _inlinePanelInstance.measurement === e.linestring) {
+			if (this._inlinePanelInstance && this._inlinePanelInstance.measurement === e.linestring) {
 				showInlinePanel(null);
 			}
 		});

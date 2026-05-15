@@ -24,6 +24,7 @@ import {CameraPanel} from "./CameraPanel.js";
 import {AnnotationPanel} from "./AnnotationPanel.js";
 import { CameraAnimationPanel } from "./CameraAnimationPanel.js";
 import { DrawLineStringPanel } from "./DrawLineStringPanel.js";
+import { MultiLineStringPanel } from "./MultiLineStringPanel.js";
 
 export class PropertiesPanel{
 
@@ -33,6 +34,7 @@ export class PropertiesPanel{
 		this.object = null;
 		this.cleanupTasks = [];
 		this.scene = null;
+
 	}
 
 	setScene(scene){
@@ -897,6 +899,15 @@ export class PropertiesPanel{
 
 	setDrawLineString(object){
 		let panel = new DrawLineStringPanel(this.viewer, object, this);
+		this.container.append(panel.elContent);
+	}
+
+	setMultiLineString(linestrings){
+		this.object = null;
+		for (let task of this.cleanupTasks) task();
+		this.cleanupTasks = [];
+		this.container.empty();
+		let panel = new MultiLineStringPanel(this.viewer, linestrings, this);
 		this.container.append(panel.elContent);
 	}
 
