@@ -668,15 +668,6 @@ Split divides one LineString into two at a selected node. Both resulting ways sh
 
 **Way tags** are key-value metadata that apply to the **entire LineString**. They appear at the top of the Properties panel whenever a LineString is selected.
 
-### Default way tags
-
-Every newly drawn LineString starts with two pre-filled way tags:
-
-| Key | Default value | Purpose |
-|---|---|---|
-| \`cost_factor\` | \`1.000000\` | Routing cost multiplier for this segment |
-| \`speed_limit\` | \`10\` | Speed limit in km/h for this segment |
-
 ### Add / Edit / Delete a way tag
 
 1. Click **Add tag** at the bottom of the Way Tags section.
@@ -935,7 +926,8 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 			{ name: 'Regulatory Element', color: '#aa44ff', type: 'way',  wayTags: { type: 'regulatory_element'                               }, nodeTags: {} },
 			{ name: 'Guard Rail',         color: '#44ff88', type: 'way',  wayTags: { type: 'guard_rail'                                       }, nodeTags: {} },
 			{ name: 'Goal Point',         color: '#ff44aa', type: 'node', wayTags: {},                                                          nodeTags: { stop_point_type: 'goal_point', color: 'red' } },
-			{ name: 'Custom',             color: '#00ff00', type: 'way',  wayTags: { cost_factor: '1.000000', speed_limit: '10'               }, nodeTags: {} },
+			{ name: 'Speed and Cost factor',               color: '#00ff00', type: 'way',  wayTags: { cost_factor: '1.000000', speed_limit: '10'               }, nodeTags: {} },
+			{ name: 'Custom',             color: '#00ff00', type: 'way',  wayTags: {                                                          }, nodeTags: {} },
 		];
 
 		const inferPresetType = (p) => {

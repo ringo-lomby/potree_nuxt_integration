@@ -4,6 +4,8 @@ import {Utils} from "../utils.js";
 import {Line2} from "../../libs/three.js/lines/Line2.js";
 import {LineGeometry} from "../../libs/three.js/lines/LineGeometry.js";
 import {LineMaterial} from "../../libs/three.js/lines/LineMaterial.js";
+import {LineSegments2} from "../../libs/three.js/lines/LineSegments2.js";
+import {LineSegmentsGeometry} from "../../libs/three.js/lines/LineSegmentsGeometry.js";
 
 // Shared across all DrawLineString instances — created once, never recreated.
 let _sharedNodeGeometry = null;
@@ -135,8 +137,8 @@ export class DrawLineString extends THREE.Object3D {
 	_ensureHighlightEdgeLine () {
 		if (this._highlightEdgeLine) return;
 
-		this._highlightEdgeOutline = new Line2(
-			new LineGeometry(),
+		this._highlightEdgeOutline = new LineSegments2(
+			new LineSegmentsGeometry(),
 			new LineMaterial({
 				color: 0x440000,
 				linewidth: 5,
@@ -147,8 +149,8 @@ export class DrawLineString extends THREE.Object3D {
 		this._highlightEdgeOutline.visible = false;
 		this.add(this._highlightEdgeOutline);
 
-		this._highlightEdgeLine = new Line2(
-			new LineGeometry(),
+		this._highlightEdgeLine = new LineSegments2(
+			new LineSegmentsGeometry(),
 			new LineMaterial({
 				color: 0xff0000,
 				linewidth: 3,
@@ -317,6 +319,12 @@ export class DrawLineString extends THREE.Object3D {
 	// Toggle a node in/out of the multi-node selection.
 	// Clears single-node selection (selectedNodeIndex) when any multi-node entry exists.
 	toggleNodeInSelection (index) {
+		// Migrate any single-node selection into the multi-selection Set first,
+		// so Ctrl+clicking a second node doesn't lose the first.
+		if (this.selectedNodeIndex >= 0) {
+			this.selectedNodeIndices.add(this.selectedNodeIndex);
+			this.selectedNodeIndex = -1;
+		}
 		if (this.selectedNodeIndices.has(index)) {
 			this.selectedNodeIndices.delete(index);
 		} else {

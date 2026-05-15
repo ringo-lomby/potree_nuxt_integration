@@ -443,7 +443,6 @@ export class DrawLineStringTool extends EventDispatcher {
 					}
 				}
 				// Toggle the clicked node in the multi-node selection
-				hitLs.selectedNodeIndex = -1;
 				hitLs._selected = false;
 				hitLs.toggleNodeInSelection(hitIdx);
 				// Show/refresh the inline panel so way tags are editable
@@ -975,7 +974,7 @@ export class DrawLineStringTool extends EventDispatcher {
 		let linestring = new DrawLineString();
 		linestring.color = new THREE.Color(args.color || 0x00ff00);
 		linestring.name = args.name || 'LineString';
-		linestring._wayTags = args.wayTags ? {...args.wayTags} : { cost_factor: '1.000000', speed_limit: '10' };
+		linestring._wayTags = args.wayTags ? {...args.wayTags} : {};
 
 		this.dispatchEvent({
 			type: 'start_inserting_linestring',
