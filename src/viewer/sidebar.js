@@ -939,10 +939,10 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 		const STORAGE_KEY = 'potree_tag_presets_v2';
 		const DEFAULTS = [
 			{ name: 'Stop Line',          color: '#ff4444', type: 'way',  wayTags: { type: 'stop_line',         subtype: 'solid'             }, nodeTags: {} },
-			{ name: 'Traffic Light',      color: '#ffcc00', type: 'way',  wayTags: { type: 'traffic_light',      subtype: 'red_yellow_green', height: '0.6' }, nodeTags: {} },
+			{ name: 'Traffic Light',      color: '#ff8800', type: 'way',  wayTags: { type: 'traffic_light',      subtype: 'red_yellow_green', height: '0.6' }, nodeTags: {} },
 			{ name: 'Lane Marking',       color: '#aaaaaa', type: 'way',  wayTags: { type: 'line_thin',          subtype: 'solid'             }, nodeTags: {} },
 			{ name: 'Traffic Sign',       color: '#ff8800', type: 'way',  wayTags: { type: 'traffic_sign',       subtype: 'stop_sign'         }, nodeTags: {} },
-			{ name: 'Light Bulbs',        color: '#ffffff', type: 'way',  wayTags: { type: 'light_bulbs',        subtype: 'solid'             }, nodeTags: {} },
+			{ name: 'Light Bulbs',        color: '#ff8800', type: 'way',  wayTags: { type: 'light_bulbs',        subtype: 'solid'             }, nodeTags: {} },
 			{ name: 'Detection Area',     color: '#44aaff', type: 'way',  closed: true, wayTags: { type: 'detection_area', area: 'yes' }, nodeTags: {} },
 			{ name: 'Regulatory Element', color: '#aa44ff', type: 'way',  wayTags: { type: 'regulatory_element'                               }, nodeTags: {} },
 			{ name: 'Guard Rail',         color: '#44ff88', type: 'way',  wayTags: { type: 'guard_rail'                                       }, nodeTags: {} },
@@ -1015,6 +1015,11 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 						ls.update();
 					} else {
 						Object.assign(ls._wayTags, preset.wayTags);
+						if (preset.wayTags && ['traffic_light', 'light_bulbs'].includes(preset.wayTags.type) && preset.color) {
+							ls.color.set(preset.color);
+							ls._geometryDirty = true;
+							ls.update();
+						}
 					}
 				}
 
@@ -1036,6 +1041,11 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 						ls.update();
 					} else {
 						Object.assign(ls._wayTags, preset.wayTags);
+						if (preset.wayTags && ['traffic_light', 'light_bulbs'].includes(preset.wayTags.type) && preset.color) {
+							ls.color.set(preset.color);
+							ls._geometryDirty = true;
+							ls.update();
+						}
 					}
 				}
 				this.viewer.postMessage(`Preset "${preset.name}" applied to ${panel.linestrings.length} linestrings`, { duration: 2000 });

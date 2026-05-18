@@ -310,14 +310,22 @@ export class OSMImporter {
 			elevIndex = OSMImporter._buildElevationIndex(viewer);
 		}
 
+		const WAY_TYPE_COLORS = {
+			traffic_light:       0xff8800,
+			light_bulbs:         0xff8800,
+			detection_area:      0x44aaff,
+		};
+
 		let linestrings = [];
 
 		for (let wi = 0; wi < ways.length; wi++) {
 			let way = ways[wi];
 			let ls  = new DrawLineString();
 			ls.name  = way.name;
-			const isArea = way.wayTags && way.wayTags.area === 'yes';
-			ls.color.setHex(isArea ? 0x44aaff : color);
+			const isArea    = way.wayTags && way.wayTags.area === 'yes';
+			const wayType   = way.wayTags && way.wayTags.type;
+			const typeColor = WAY_TYPE_COLORS[wayType];
+			ls.color.setHex(isArea ? 0x44aaff : (typeColor ?? color));
 
 			ls._osmMeta = { wayId: way.id, wayTags: way.wayTags, fileMeta };
 			ls._wayTags = way.wayTags;
