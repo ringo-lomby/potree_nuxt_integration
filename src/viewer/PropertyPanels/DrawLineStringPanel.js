@@ -221,9 +221,30 @@ export class DrawLineStringPanel extends MeasurePanel{
 
 		let si = this.measurement.selectedNodeIndex;
 		if (si >= 0 && si < this.measurement.points.length) {
+			let N = this.measurement.points.length;
+			let isEndpoint = (si === 0 || si === N - 1);
 			elContainer.append(this._buildSplitButton(si));
+			if (isEndpoint) elContainer.append(this._buildConnectButtons(si));
 			elContainer.append(this._buildTagEditor(this.measurement.points[si], si));
 		}
+	}
+
+	_buildConnectButtons(si) {
+		let tool = this.viewer._drawLineStringTool;
+		let ls   = this.measurement;
+		let row  = $(`<div style="display:flex;gap:4px;margin-top:6px;"></div>`);
+
+		let linkBtn = $(`<button style="flex:1;padding:4px 0;font-size:11px;background:#2a2a2a;color:#ccc;border:1px solid #555;cursor:pointer;border-radius:3px" title="Link endpoints at a shared junction node — then click an endpoint on another linestring">Link</button>`);
+		linkBtn.click(() => { if (tool) tool.startConnectMode('junction', ls, si); });
+
+		if (!ls.closed) {
+			let mergeBtn = $(`<button style="flex:1;padding:4px 0;font-size:11px;background:#2a2a2a;color:#ccc;border:1px solid #555;cursor:pointer;border-radius:3px" title="Merge into one linestring — then click an endpoint on another linestring">Merge</button>`);
+			mergeBtn.click(() => { if (tool) tool.startConnectMode('merge', ls, si); });
+			row.append(mergeBtn);
+		}
+
+		row.append(linkBtn);
+		return row;
 	}
 
 	_buildMultiNodeInfo(elContainer, indices) {

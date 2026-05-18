@@ -3,7 +3,6 @@ import * as THREE from "../../libs/three.js/build/three.module.js";
 import {DrawLineString} from "./DrawLineString.js";
 import {Utils} from "../utils.js";
 import { EventDispatcher } from "../EventDispatcher.js";
-import { showConnectDialog } from "./ConnectDialog.js";
 
 export class DrawLineStringTool extends EventDispatcher {
 	constructor (viewer) {
@@ -27,6 +26,8 @@ export class DrawLineStringTool extends EventDispatcher {
 		this._snapHighlightedEndpoint = null; // DrawLineString | null — highlighted snap target
 		this._junctionNodeCounter = -900000000; // decrements for fresh shared junction IDs
 		this._snapNdc             = new THREE.Vector3(); // scratch for endpoint projection
+		this._connectMode         = null; // 'merge' | 'junction' | null
+		this._connectFirst        = null; // { ls, nodeIdx } | null — first endpoint selected in connect mode
 
 		// Expose the tool on the viewer so panels can reach it without a separate reference.
 		viewer._drawLineStringTool = this;
@@ -97,41 +98,14 @@ export class DrawLineStringTool extends EventDispatcher {
 				this._dragSnapshots.set(ls, this._snapshotPoints(ls));
 			};
 
-			let onDropped = async (e) => {
+			let onDropped = (e) => {
 				if (this._insertingLinestring) return;
 				let before = this._dragSnapshots.get(ls);
 				if (before !== undefined) this._dragSnapshots.delete(ls);
-
-				let nodeIndex = e.index;
-				let isEndpoint = (nodeIndex === 0 || nodeIndex === ls.points.length - 1);
-
-				if (isEndpoint) {
-					let snap = this._findEndpointSnap(ls, nodeIndex);
-					if (snap) {
-						this._clearSnapHighlight();
-						await this._promptAndConnect(ls, nodeIndex, snap, before);
-						return;
-					}
-				}
-
 				if (before !== undefined) this._pushHistory(ls, before);
 			};
 
-			let onMarkerMoved = (e) => {
-				let i = e.index;
-				if (i !== 0 && i !== ls.points.length - 1) return;
-				let snap = this._findEndpointSnap(ls, i);
-				if (snap) {
-					if (this._snapHighlightedEndpoint !== snap.ls) {
-						this._clearSnapHighlight();
-						snap.ls._snapHighlighted = true;
-						snap.ls.applyHighlight();
-						this._snapHighlightedEndpoint = snap.ls;
-					}
-				} else {
-					this._clearSnapHighlight();
-				}
-			};
+			let onMarkerMoved = () => {};
 
 			ls.addEventListener('drag_start',     onDragStart);
 			ls.addEventListener('marker_dropped', onDropped);
@@ -152,6 +126,10 @@ export class DrawLineStringTool extends EventDispatcher {
 
 		// Keyboard handling for selected nodes
 		this._onKeyDown = (e) => {
+			if (e.key === 'Escape' && this._connectMode) {
+				this.cancelConnectMode();
+				return;
+			}
 			if (e.ctrlKey && !e.shiftKey && e.key === 'z') {
 				e.preventDefault();
 				let entry = this._undoStack.pop();
@@ -502,10 +480,29 @@ export class DrawLineStringTool extends EventDispatcher {
 				this._lineDragJustHappened = false;
 				return;
 			}
+			// If connect mode is active, intercept endpoint node clicks.
+			let _nodeHit = this._findNodeHit(e.clientX, e.clientY);
+			if (this._connectMode) {
+				if (_nodeHit) {
+					let { ls, idx } = _nodeHit;
+					if (idx === 0 || idx === ls.points.length - 1) {
+						this._handleConnectClick(ls, idx);
+						return;
+					}
+					// Non-endpoint node clicked — ignore and preserve connect mode.
+					return;
+				}
+				// No node hit — let normal selection run but keep connect mode alive.
+				// (User may be clicking to navigate; ESC cancels explicitly.)
+			}
 			// If the click landed on a node sphere the mesh click handler already
 			// ran (Three.js events fire before DOM listeners). Let it win — skip
 			// line selection so the node selection is not immediately cleared.
-			if (this._findNodeHit(e.clientX, e.clientY)) return;
+			// Dispatch linestring_selected_in_3d so the inline properties panel opens.
+			if (_nodeHit) {
+				this.viewer.dispatchEvent({ type: 'linestring_selected_in_3d', linestring: _nodeHit.ls });
+				return;
+			}
 
 			let hit = this._findLineSegmentHit(e.clientX, e.clientY, 12);
 
@@ -738,13 +735,22 @@ export class DrawLineStringTool extends EventDispatcher {
 		);
 		let raycaster = new THREE.Raycaster();
 		raycaster.setFromCamera(nmouse, this.viewer.scene.getActiveCamera());
+		let bestLs   = null;
+		let bestIdx  = -1;
+		let bestDist = Infinity;
 		for (let ls of this.viewer.scene.drawLineStrings) {
 			if (!ls._nodesMesh || !ls._nodesMesh.visible || !ls._nodesMesh.instanceMatrix) continue;
 			let hits = [];
 			ls._nodesMesh.raycast(raycaster, hits);
-			if (hits.length > 0) return true;
+			for (let h of hits) {
+				if (h.distance < bestDist) {
+					bestDist = h.distance;
+					bestLs   = ls;
+					bestIdx  = h.instanceId;
+				}
+			}
 		}
-		return false;
+		return bestLs ? { ls: bestLs, idx: bestIdx } : null;
 	}
 
 	_findLineSegmentHit (clientX, clientY, thresholdPx) {
@@ -951,25 +957,19 @@ export class DrawLineStringTool extends EventDispatcher {
 		this._snapHighlightedEndpoint = null;
 	}
 
-	async _promptAndConnect (lsA, myEndIndex, snap, before) {
+	_promptAndConnect (lsA, myEndIndex, snap, before) {
 		// Snap the dragged endpoint exactly onto the target.
 		lsA.setPosition(myEndIndex, snap.ls.points[snap.endpointIndex].position.clone());
-
-		let result = await showConnectDialog({ labelA: lsA.name, labelB: snap.ls.name });
-
-		if (!result) {
-			// Cancelled — restore pre-drag position.
-			if (before) this._applySnapshot(lsA, before);
-			return;
-		}
-
-		this._connectLineStrings(lsA, myEndIndex, snap.ls, snap.endpointIndex, result, before);
+		let action = this._connectMode || 'junction';
+		if (this._connectMode) this.cancelConnectMode();
+		this._connectLineStrings(lsA, myEndIndex, snap.ls, snap.endpointIndex, action, before);
 	}
 
 	_connectLineStrings (lsA, endIndexA, lsB, endIndexB, mode, beforeA) {
 		let beforeB = this._snapshotPoints(lsB);
 
 		if (mode === 'merge') {
+			if (lsA.closed || lsB.closed) return; // merging a closed polygon is not supported
 			lsA.mergeWith(lsB, endIndexA, endIndexB);
 			this.viewer.scene.removeDrawLineString(lsB);
 
@@ -994,6 +994,53 @@ export class DrawLineStringTool extends EventDispatcher {
 			if (this._undoStack.length >= 50) this._undoStack.shift();
 			this._undoStack.push({ type: 'junction', lsA, lsB, beforeA, beforeB, afterA, afterB });
 			this._redoStack = [];
+		}
+	}
+
+	startConnectMode (action, firstLs, firstNodeIdx) {
+		this._connectMode = action; // 'merge' | 'junction'
+		if (firstLs != null && firstNodeIdx != null) {
+			// First endpoint pre-set from properties panel — highlight cyan and wait for second click.
+			this._connectFirst = { ls: firstLs, nodeIdx: firstNodeIdx };
+			firstLs._connectPendingIndex = firstNodeIdx;
+			firstLs.applyHighlight();
+			this.dispatchEvent({ type: 'connect_mode_changed', mode: action, step: 'second' });
+		} else {
+			this._connectFirst = null;
+			this.dispatchEvent({ type: 'connect_mode_changed', mode: action, step: 'first' });
+		}
+	}
+
+	cancelConnectMode () {
+		if (this._connectFirst) {
+			this._connectFirst.ls._connectPendingIndex = -1;
+			this._connectFirst.ls.selectedNodeIndex = -1;
+			this._connectFirst.ls.applyHighlight();
+		}
+		this._connectMode  = null;
+		this._connectFirst = null;
+		this.dispatchEvent({ type: 'connect_mode_changed', mode: null });
+	}
+
+	_handleConnectClick (ls, nodeIdx) {
+		if (!this._connectFirst) {
+			this._connectFirst = { ls, nodeIdx };
+			// Highlight the first endpoint cyan.
+			for (let other of this.viewer.scene.drawLineStrings) {
+				if (other !== ls) { other.selectNode(-1); other._selected = false; other.applyHighlight(); }
+			}
+			ls._connectPendingIndex = nodeIdx;
+			ls.selectedNodeIndex = nodeIdx;
+			ls._selected = false;
+			ls.applyHighlight();
+			this.dispatchEvent({ type: 'connect_mode_changed', mode: this._connectMode, step: 'second' });
+		} else {
+			const { ls: lsA, nodeIdx: idxA } = this._connectFirst;
+			if (ls === lsA) return; // same linestring — ignore
+			const action  = this._connectMode;
+			const beforeA = this._snapshotPoints(lsA);
+			this.cancelConnectMode();
+			this._connectLineStrings(lsA, idxA, ls, nodeIdx, action, beforeA);
 		}
 	}
 

@@ -40,7 +40,8 @@ export class DrawLineString extends THREE.Object3D {
 		this.selectedNodeIndex = -1;
 		this._hoveredNodeIndex = -1;
 		this._selected = false;
-		this._snapHighlighted = false; // set by DrawLineStringTool during endpoint snap
+		this._snapHighlighted = false;
+		this._connectPendingIndex = -1; // set by DrawLineStringTool when this node is the first connect endpoint
 		this.ghostIndex = -1;
 
 		// boundingBox, _nodeMatrix, _nodeColor are created lazily on first use
@@ -144,7 +145,7 @@ export class DrawLineString extends THREE.Object3D {
 		this._highlightEdgeOutline = new LineSegments2(
 			new LineSegmentsGeometry(),
 			new LineMaterial({
-				color: 0x440000,
+				color: 0x444400,
 				linewidth: 5,
 				resolution: new THREE.Vector2(1000, 1000),
 				depthTest: true,
@@ -156,7 +157,7 @@ export class DrawLineString extends THREE.Object3D {
 		this._highlightEdgeLine = new LineSegments2(
 			new LineSegmentsGeometry(),
 			new LineMaterial({
-				color: 0xff0000,
+				color: 0xffff00,
 				linewidth: 3,
 				resolution: new THREE.Vector2(1000, 1000),
 				depthTest: true,
@@ -375,6 +376,12 @@ export class DrawLineString extends THREE.Object3D {
 				edges.push([i, i + 1]);
 			}
 		}
+		// For closed polygons, also check the closing edge (last → first).
+		if (this.closed && this.points.length > 1 &&
+			this.selectedNodeIndices.has(this.points.length - 1) &&
+			this.selectedNodeIndices.has(0)) {
+			edges.push([this.points.length - 1, 0]);
+		}
 		return edges;
 	}
 
@@ -400,16 +407,21 @@ export class DrawLineString extends THREE.Object3D {
 
 		for (let i = 0; i < this.points.length; i++) {
 			let isEndpoint = (i === 0 || i === this.points.length - 1);
-			if (i === this.selectedNodeIndex && i !== this.ghostIndex) {
-				this._nodeColor.set(0xff0000);
+			if (i === this._connectPendingIndex) {
+				this._nodeColor.set(0x00ffff); // cyan — pending connect endpoint
+			} else if (i === this.selectedNodeIndex && i !== this.ghostIndex) {
+				this._nodeColor.set(0xffff00); // yellow — selected node
 			} else if (this.selectedNodeIndices.has(i) && i !== this.ghostIndex) {
-				this._nodeColor.set(0xff0000); // red — multi-node selected (same as single)
-			} else if (this._snapHighlighted && isEndpoint) {
-				this._nodeColor.set(0x00ffff); // cyan — snap target
+				this._nodeColor.set(0xffff00); // yellow — multi-node selected
 			} else if (i === this._hoveredNodeIndex && i !== this.selectedNodeIndex) {
 				this._nodeColor.set(0xffffff);
 			} else {
-				this._nodeColor.copy(this.color);
+				const tags = this.points[i]._osmNodeTags;
+				if (tags && tags.stop_point_type === 'goal_point') {
+					this._nodeColor.set(0xff0000); // red — goal point
+				} else {
+					this._nodeColor.copy(this.color);
+				}
 			}
 			this._nodesMesh.setColorAt(i, this._nodeColor);
 		}
@@ -422,10 +434,10 @@ export class DrawLineString extends THREE.Object3D {
 		// Line turns red only when the whole line is selected with no node selected.
 		// If a node is selected, the node alone is red and the line keeps its original color.
 		const lineHighlighted = this._selected && this.selectedNodeIndex < 0;
-		this._lineEdge.material.color.set(lineHighlighted ? 0xff0000 : this.color.getHex());
-		this._lineOutline.material.color.set(lineHighlighted ? 0x440000 : 0x111111);
+		this._lineEdge.material.color.set(lineHighlighted ? 0xffff00 : this.color.getHex());
+		this._lineOutline.material.color.set(lineHighlighted ? 0x444400 : 0x111111);
 		if (this._fillMesh) {
-			this._fillMesh.material.color.set(lineHighlighted ? 0xff0000 : this.color.getHex());
+			this._fillMesh.material.color.set(lineHighlighted ? 0xffff00 : this.color.getHex());
 			this._fillMesh.material.opacity = lineHighlighted ? 0.35 : 0.25;
 		}
 	}
@@ -590,6 +602,14 @@ export class DrawLineString extends THREE.Object3D {
 			copyPoint(src, wayB.points[wayB.points.length - 1]);
 		}
 
+		// For a closed polygon, append the first node to wayB so the closing edge is preserved
+		// as an explicit segment (D→A) rather than being silently dropped.
+		if (this.closed) {
+			let src = this.points[0];
+			wayB.addMarker(src.position.clone());
+			copyPoint(src, wayB.points[wayB.points.length - 1]);
+		}
+
 		return [wayA, wayB];
 	}
 
@@ -636,6 +656,7 @@ export class DrawLineString extends THREE.Object3D {
 		}
 		this._suppressUpdates = false;
 		this._geometryDirty = true;
+		this.closed = false;
 		this.update();
 
 		return this;

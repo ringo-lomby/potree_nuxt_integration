@@ -482,6 +482,11 @@ body {
   filter: drop-shadow(0px 0px 4px white);
 }
 
+.active-tool-btn {
+  outline: 2px solid #ffff00;
+  border-radius: 3px;
+}
+
 .ui-widget-content {
   /*color: var(--font-color) !important;*/
 }

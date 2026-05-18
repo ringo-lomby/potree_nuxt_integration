@@ -303,26 +303,6 @@ export class Sidebar{
 			}
 		));
 
-		// DRAW AREA
-		$('#map_tools').append(this.createToolIcon(
-			Potree.resourcePath + '/icons/polygon.svg',
-			'[title]Draw Area',
-			() => {
-				$('#menu_scene').next().slideDown();
-				let linestring = this.drawLineStringTool.startInsertion({
-					name: 'Polygon',
-					color: '#44aaff',
-					closed: true,
-					wayTags: { area: 'yes' }
-				});
-
-				let vectorsRoot = $("#jstree_scene").jstree().get_json("vectors");
-				let jsonNode = vectorsRoot.children.find(child => child.data.uuid === linestring.uuid);
-				$.jstree.reference(jsonNode.id).deselect_all();
-				$.jstree.reference(jsonNode.id).select_node(jsonNode.id);
-			}
-		));
-
 		// IMPORT LINESTRINGS (OSM)
 		{
 			let elImportFile = $('<input type="file" accept=".osm,.xml" style="display:none"/>');
@@ -963,7 +943,7 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 			{ name: 'Lane Marking',       color: '#aaaaaa', type: 'way',  wayTags: { type: 'line_thin',          subtype: 'solid'             }, nodeTags: {} },
 			{ name: 'Traffic Sign',       color: '#ff8800', type: 'way',  wayTags: { type: 'traffic_sign',       subtype: 'stop_sign'         }, nodeTags: {} },
 			{ name: 'Light Bulbs',        color: '#ffffff', type: 'way',  wayTags: { type: 'light_bulbs',        subtype: 'solid'             }, nodeTags: {} },
-			{ name: 'Detection Area',     color: '#44aaff', type: 'way',  closed: true, wayTags: { type: 'detection_area' }, nodeTags: {} },
+			{ name: 'Detection Area',     color: '#44aaff', type: 'way',  closed: true, wayTags: { type: 'detection_area', area: 'yes' }, nodeTags: {} },
 			{ name: 'Regulatory Element', color: '#aa44ff', type: 'way',  wayTags: { type: 'regulatory_element'                               }, nodeTags: {} },
 			{ name: 'Guard Rail',         color: '#44ff88', type: 'way',  wayTags: { type: 'guard_rail'                                       }, nodeTags: {} },
 			{ name: 'Goal Point',         color: '#ff44aa', type: 'node', wayTags: {},                                                          nodeTags: { stop_point_type: 'goal_point', color: 'red' } },
@@ -1006,24 +986,36 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 				const presetType = preset.type || 'way';
 
 				if (presetType === 'node') {
+					let indices;
 					if (!hasNodeSelection) {
-						this.viewer.postError(`"${preset.name}" is a node preset — Ctrl+click nodes first.`);
-						return;
+						// No individual nodes selected — apply to every node in the linestring.
+						indices = new Set(ls.points.map((_, i) => i));
+					} else {
+						indices = new Set(ls.selectedNodeIndices);
+						if (ls.selectedNodeIndex >= 0) indices.add(ls.selectedNodeIndex);
 					}
-					const indices = new Set(ls.selectedNodeIndices);
-					if (ls.selectedNodeIndex >= 0) indices.add(ls.selectedNodeIndex);
 					for (let i of indices) {
 						if (!ls.points[i]) continue;
 						if (!ls.points[i]._osmNodeTags) ls.points[i]._osmNodeTags = {};
 						Object.assign(ls.points[i]._osmNodeTags, preset.nodeTags);
 					}
+					ls.update();
+					ls.applyHighlight();
 				} else {
 					if (hasNodeSelection) {
 						this.viewer.postError(`"${preset.name}" is a way preset — click the linestring without nodes selected.`);
 						return;
 					}
 					if (!ls._wayTags) ls._wayTags = {};
-					Object.assign(ls._wayTags, preset.wayTags);
+					if (preset.wayTags && preset.wayTags.type === 'detection_area') {
+						ls._wayTags = { ...preset.wayTags };
+						ls.color.set(preset.color || '#44aaff');
+						ls.showFill = true;
+						ls._geometryDirty = true;
+						ls.update();
+					} else {
+						Object.assign(ls._wayTags, preset.wayTags);
+					}
 				}
 
 				panel._refreshTagEditors();
@@ -1036,7 +1028,15 @@ All four endpoint combinations are supported (end→start, end→end, start→st
 				}
 				for (let ls of panel.linestrings) {
 					if (!ls._wayTags) ls._wayTags = {};
-					Object.assign(ls._wayTags, preset.wayTags);
+					if (preset.wayTags && preset.wayTags.type === 'detection_area') {
+						ls._wayTags = { ...preset.wayTags };
+						ls.color.set(preset.color || '#44aaff');
+						ls.showFill = true;
+						ls._geometryDirty = true;
+						ls.update();
+					} else {
+						Object.assign(ls._wayTags, preset.wayTags);
+					}
 				}
 				this.viewer.postMessage(`Preset "${preset.name}" applied to ${panel.linestrings.length} linestrings`, { duration: 2000 });
 			} else {
